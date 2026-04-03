@@ -1,12 +1,13 @@
 """Tests for the scheduling pre-step in workflows/autoloop.md.
 
-Functions are extracted directly from the workflow heredoc at import time
-(see conftest.py) — there is no separate copy of the scheduling code.
+Functions are extracted directly from the workflow JavaScript heredoc at import
+time (see conftest.py) and called via Node.js subprocess — there is no separate
+copy of the scheduling code.
 
 For inline logic (slugify, frontmatter parsing, skip conditions, etc.) that
-isn't wrapped in a function def in the workflow, we write thin test helpers
+isn't wrapped in a named function in the workflow, we write thin test helpers
 that replicate the exact inline pattern. These are documented with the
-workflow source lines they correspond to.
+workflow source patterns they correspond to.
 """
 
 import re
@@ -27,14 +28,14 @@ get_program_name = _funcs["get_program_name"]
 # ---------------------------------------------------------------------------
 
 def slugify_issue_title(title):
-    """Replicates the inline slug logic at workflows/autoloop.md lines 236-237."""
+    """Replicates the inline slug logic in the workflow's issue scanning section."""
     slug = re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-')
     slug = re.sub(r'-+', '-', slug)
     return slug
 
 
 def parse_frontmatter(content):
-    """Replicates the inline frontmatter parsing at workflows/autoloop.md lines 316-330."""
+    """Replicates the inline frontmatter parsing in the workflow's program scanning loop."""
     content_stripped = re.sub(r'^(\s*<!--.*?-->\s*\n)*', '', content, flags=re.DOTALL)
     schedule_delta = None
     target_metric = None
@@ -53,7 +54,7 @@ def parse_frontmatter(content):
 
 
 def is_unconfigured(content):
-    """Replicates the inline unconfigured check at workflows/autoloop.md lines 306-312."""
+    """Replicates the inline unconfigured check in the workflow's program scanning loop."""
     if "<!-- AUTOLOOP:UNCONFIGURED -->" in content:
         return True
     if re.search(r'\bTODO\b|\bREPLACE', content):
@@ -62,7 +63,7 @@ def is_unconfigured(content):
 
 
 def check_skip_conditions(state):
-    """Replicates the inline skip logic at workflows/autoloop.md lines 347-361.
+    """Replicates the inline skip logic in the workflow's program scanning loop.
 
     Returns (should_skip, reason).
     """
@@ -80,7 +81,7 @@ def check_skip_conditions(state):
 
 
 def check_if_due(schedule_delta, last_run, now):
-    """Replicates the inline due check at workflows/autoloop.md lines 363-368.
+    """Replicates the inline due check in the workflow's program scanning loop.
 
     Returns (is_due, next_due_iso).
     """
@@ -91,7 +92,7 @@ def check_if_due(schedule_delta, last_run, now):
 
 
 def select_program(due, forced_program=None, all_programs=None, unconfigured=None, issue_programs=None):
-    """Replicates the selection logic at workflows/autoloop.md lines 379-409.
+    """Replicates the selection logic in the workflow's program selection section.
 
     Returns (selected, selected_file, selected_issue, selected_target_metric, deferred, error).
     """
@@ -312,7 +313,7 @@ class TestGetProgramName:
 
 
 # ---------------------------------------------------------------------------
-# slugify_issue_title (inline pattern, lines 236-237)
+# slugify_issue_title (inline pattern, issue scanning section)
 # ---------------------------------------------------------------------------
 
 class TestSlugifyIssueTitle:
@@ -345,7 +346,7 @@ class TestSlugifyIssueTitle:
         assert slugify_issue_title("a   b   c") == "a-b-c"
 
     def test_collision_dedup(self):
-        """Replicates the slug collision dedup at workflows/autoloop.md lines 240-242."""
+        """Replicates the slug collision dedup in the workflow's issue scanning section."""
         # Simulate two issues that slugify to the same name
         issue_programs = {}
         titles = [("Improve Tests", 10), ("improve-tests", 20)]
@@ -363,7 +364,7 @@ class TestSlugifyIssueTitle:
 
 
 # ---------------------------------------------------------------------------
-# parse_frontmatter (inline pattern, lines 316-330)
+# parse_frontmatter (inline pattern, program scanning loop)
 # ---------------------------------------------------------------------------
 
 class TestParseFrontmatter:
@@ -416,7 +417,7 @@ class TestParseFrontmatter:
 
 
 # ---------------------------------------------------------------------------
-# is_unconfigured (inline pattern, lines 306-312)
+# is_unconfigured (inline pattern, program scanning loop)
 # ---------------------------------------------------------------------------
 
 class TestIsUnconfigured:
@@ -453,7 +454,7 @@ REPLACE THIS with your optimization goal.
 
 
 # ---------------------------------------------------------------------------
-# check_skip_conditions (inline pattern, lines 347-361)
+# check_skip_conditions (inline pattern, program scanning loop)
 # ---------------------------------------------------------------------------
 
 class TestCheckSkipConditions:
@@ -512,7 +513,7 @@ class TestCheckSkipConditions:
 
 
 # ---------------------------------------------------------------------------
-# check_if_due (inline pattern, lines 363-368)
+# check_if_due (inline pattern, program scanning loop)
 # ---------------------------------------------------------------------------
 
 class TestCheckIfDue:
@@ -556,7 +557,7 @@ class TestCheckIfDue:
 
 
 # ---------------------------------------------------------------------------
-# select_program (inline pattern, lines 379-409)
+# select_program (inline pattern, program selection section)
 # ---------------------------------------------------------------------------
 
 class TestSelectProgram:
@@ -646,7 +647,7 @@ class TestSelectProgram:
     def test_forced_program_not_in_due_select_returns_none(self):
         # select_program itself returns None for target_metric when program isn't in due.
         # The workflow's forced-program path has a fallback that parses target_metric
-        # directly from the program file (workflows/autoloop.md lines 399-410).
+        # directly from the program file (see forced-program fallback in the workflow).
         due = []
         all_progs = {"a": "a.md"}
         selected, file, issue, target, deferred, err = select_program(

@@ -24,89 +24,88 @@ steps:
       GITHUB_REPOSITORY: ${{ github.repository }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
     run: |
-      python3 - << 'PYEOF'
-      import os, subprocess, sys
+      node - << 'JSEOF'
+      const { execSync, spawnSync } = require('child_process');
 
-      token = os.environ.get("GITHUB_TOKEN", "")
-      repo = os.environ.get("GITHUB_REPOSITORY", "")
-      default_branch = os.environ.get("DEFAULT_BRANCH", "main")
+      const defaultBranch = process.env.DEFAULT_BRANCH || 'main';
 
-      # List all remote branches matching the autoloop/* pattern
-      result = subprocess.run(
-          ["git", "branch", "-r", "--list", "origin/autoloop/*"],
-          capture_output=True, text=True
-      )
-      if result.returncode != 0:
-          print(f"Failed to list remote branches: {result.stderr}")
-          sys.exit(0)
+      function git(...args) {
+          const result = spawnSync('git', args, { encoding: 'utf-8' });
+          return { returncode: result.status, stdout: result.stdout || '', stderr: result.stderr || '' };
+      }
 
-      branches = [b.strip().replace("origin/", "") for b in result.stdout.strip().split("\n") if b.strip()]
+      // List all remote branches matching the autoloop/* pattern
+      const listResult = git('branch', '-r', '--list', 'origin/autoloop/*');
+      if (listResult.returncode !== 0) {
+          console.log('Failed to list remote branches: ' + listResult.stderr);
+          process.exit(0);
+      }
 
-      if not branches:
-          print("No autoloop/* branches found. Nothing to sync.")
-          sys.exit(0)
+      const branches = listResult.stdout.trim().split('\n')
+          .map(b => b.trim())
+          .filter(b => b)
+          .map(b => b.replace('origin/', ''));
 
-      print(f"Found {len(branches)} autoloop branch(es) to sync: {branches}")
+      if (branches.length === 0) {
+          console.log('No autoloop/* branches found. Nothing to sync.');
+          process.exit(0);
+      }
 
-      failed = []
-      for branch in branches:
-          print(f"\n--- Syncing {branch} with {default_branch} ---")
+      console.log('Found ' + branches.length + ' autoloop branch(es) to sync: ' + JSON.stringify(branches));
 
-          # Fetch both branches
-          subprocess.run(["git", "fetch", "origin", branch], capture_output=True)
-          subprocess.run(["git", "fetch", "origin", default_branch], capture_output=True)
+      const failed = [];
+      for (const branch of branches) {
+          console.log('\n--- Syncing ' + branch + ' with ' + defaultBranch + ' ---');
 
-          # Check out the program branch
-          checkout = subprocess.run(
-              ["git", "checkout", branch],
-              capture_output=True, text=True
-          )
-          if checkout.returncode != 0:
-              # Try creating a local tracking branch
-              checkout = subprocess.run(
-                  ["git", "checkout", "-b", branch, f"origin/{branch}"],
-                  capture_output=True, text=True
-              )
-          if checkout.returncode != 0:
-              print(f"  Failed to checkout {branch}: {checkout.stderr}")
-              failed.append(branch)
-              continue
+          // Fetch both branches
+          git('fetch', 'origin', branch);
+          git('fetch', 'origin', defaultBranch);
 
-          # Merge the default branch into the program branch
-          merge = subprocess.run(
-              ["git", "merge", f"origin/{default_branch}", "--no-edit",
-               "-m", f"Merge {default_branch} into {branch}"],
-              capture_output=True, text=True
-          )
-          if merge.returncode != 0:
-              print(f"  Merge conflict or failure for {branch}: {merge.stderr}")
-              # Abort the merge to leave a clean state
-              subprocess.run(["git", "merge", "--abort"], capture_output=True)
-              failed.append(branch)
-              continue
+          // Check out the program branch
+          let checkout = git('checkout', branch);
+          if (checkout.returncode !== 0) {
+              // Try creating a local tracking branch
+              checkout = git('checkout', '-b', branch, 'origin/' + branch);
+          }
+          if (checkout.returncode !== 0) {
+              console.log('  Failed to checkout ' + branch + ': ' + checkout.stderr);
+              failed.push(branch);
+              continue;
+          }
 
-          # Push the updated branch
-          push = subprocess.run(
-              ["git", "push", "origin", branch],
-              capture_output=True, text=True
-          )
-          if push.returncode != 0:
-              print(f"  Failed to push {branch}: {push.stderr}")
-              failed.append(branch)
-              continue
+          // Merge the default branch into the program branch
+          const merge = git('merge', 'origin/' + defaultBranch, '--no-edit',
+              '-m', 'Merge ' + defaultBranch + ' into ' + branch);
+          if (merge.returncode !== 0) {
+              console.log('  Merge conflict or failure for ' + branch + ': ' + merge.stderr);
+              // Abort the merge to leave a clean state
+              git('merge', '--abort');
+              failed.push(branch);
+              continue;
+          }
 
-          print(f"  Successfully synced {branch}")
+          // Push the updated branch
+          const push = git('push', 'origin', branch);
+          if (push.returncode !== 0) {
+              console.log('  Failed to push ' + branch + ': ' + push.stderr);
+              failed.push(branch);
+              continue;
+          }
 
-      # Return to default branch
-      subprocess.run(["git", "checkout", default_branch], capture_output=True)
+          console.log('  Successfully synced ' + branch);
+      }
 
-      if failed:
-          print(f"\n⚠️ Failed to sync {len(failed)} branch(es): {failed}")
-          print("These branches may need manual conflict resolution.")
-          # Don't fail the workflow — log the issue but continue
-      else:
-          print(f"\n✅ All {len(branches)} branch(es) synced successfully.")
-      PYEOF
+      // Return to default branch
+      git('checkout', defaultBranch);
+
+      if (failed.length > 0) {
+          console.log('\n\u26a0\ufe0f Failed to sync ' + failed.length + ' branch(es): ' + JSON.stringify(failed));
+          console.log('These branches may need manual conflict resolution.');
+          // Don't fail the workflow -- log the issue but continue
+      } else {
+          console.log('\n\u2705 All ' + branches.length + ' branch(es) synced successfully.');
+      }
+      JSEOF
 ---
 
 Sync all autoloop/* branches with the default branch.

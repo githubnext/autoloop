@@ -88,374 +88,449 @@ steps:
       GITHUB_REPOSITORY: ${{ github.repository }}
       AUTOLOOP_PROGRAM: ${{ github.event.inputs.program }}
     run: |
-      python3 - << 'PYEOF'
-      import os, json, re, glob, sys
-      import urllib.request, urllib.error
-      from datetime import datetime, timezone, timedelta
+      node - << 'JSEOF'
+      const fs = require('fs');
+      const path = require('path');
 
-      programs_dir = ".autoloop/programs"
-      autoloop_dir = ".autoloop/programs"
-      template_file = os.path.join(autoloop_dir, "example.md")
+      const programsDir = '.autoloop/programs';
+      const autoloopDir = '.autoloop/programs';
+      const templateFile = path.join(autoloopDir, 'example.md');
 
-      # Read program state from repo-memory (persistent git-backed storage)
-      github_token = os.environ.get("GITHUB_TOKEN", "")
-      repo = os.environ.get("GITHUB_REPOSITORY", "")
-      forced_program = os.environ.get("AUTOLOOP_PROGRAM", "").strip()
+      // Read program state from repo-memory (persistent git-backed storage)
+      const githubToken = process.env.GITHUB_TOKEN || '';
+      const repo = process.env.GITHUB_REPOSITORY || '';
+      const forcedProgram = (process.env.AUTOLOOP_PROGRAM || '').trim();
 
-      # Repo-memory files are cloned to /tmp/gh-aw/repo-memory/{id}/ where {id}
-      # is derived from the branch-name configured in the tools section (memory/autoloop → autoloop)
-      repo_memory_dir = "/tmp/gh-aw/repo-memory/autoloop"
+      // Repo-memory files are cloned to /tmp/gh-aw/repo-memory/{id}/ where {id}
+      // is derived from the branch-name configured in the tools section (memory/autoloop -> autoloop)
+      const repoMemoryDir = '/tmp/gh-aw/repo-memory/autoloop';
 
-      def parse_machine_state(content):
-          """Parse the ⚙️ Machine State table from a state file. Returns a dict."""
-          state = {}
-          m = re.search(r'## ⚙️ Machine State.*?\n(.*?)(?=\n## |\Z)', content, re.DOTALL)
-          if not m:
-              return state
-          section = m.group(0)
-          for row in re.finditer(r'\|\s*(.+?)\s*\|\s*(.+?)\s*\|', section):
-              raw_key = row.group(1).strip()
-              raw_val = row.group(2).strip()
-              if raw_key.lower() in ("field", "---", ":---", ":---:", "---:"):
-                  continue
-              key = raw_key.lower().replace(" ", "_")
-              val = None if raw_val in ("—", "-", "") else raw_val
-              state[key] = val
-          # Coerce types
-          for int_field in ("iteration_count", "consecutive_errors"):
-              if int_field in state:
-                  try:
-                      state[int_field] = int(state[int_field])
-                  except (ValueError, TypeError):
-                      state[int_field] = 0
-          if "paused" in state:
-              state["paused"] = str(state.get("paused", "")).lower() == "true"
-          if "completed" in state:
-              state["completed"] = str(state.get("completed", "")).lower() == "true"
-          # recent_statuses: stored as comma-separated words (e.g. "accepted, rejected, error")
-          rs_raw = state.get("recent_statuses") or ""
-          if rs_raw:
-              state["recent_statuses"] = [s.strip().lower() for s in rs_raw.split(",") if s.strip()]
-          else:
-              state["recent_statuses"] = []
-          return state
-
-      def read_program_state(program_name):
-          """Read scheduling state from the repo-memory state file."""
-          state_file = os.path.join(repo_memory_dir, f"{program_name}.md")
-          if not os.path.isfile(state_file):
-              print(f"  {program_name}: no state file found (first run)")
-              return {}
-          with open(state_file, encoding="utf-8") as f:
-              content = f.read()
-          return parse_machine_state(content)
-
-      # Bootstrap: create autoloop programs directory and template if missing
-      if not os.path.isdir(autoloop_dir):
-          os.makedirs(autoloop_dir, exist_ok=True)
-          bt = chr(96)  # backtick — avoid literal backticks that break gh-aw compiler
-          template = "\n".join([
-              "<!-- AUTOLOOP:UNCONFIGURED -->",
-              "<!-- Remove the line above once you have filled in your program. -->",
-              "<!-- Autoloop will NOT run until you do. -->",
-              "",
-              "# Autoloop Program",
-              "",
-              "<!-- Rename this file to something meaningful (e.g. training.md, coverage.md).",
-              "     The filename (minus .md) becomes the program name used in issues, PRs,",
-              "     and slash commands. Want multiple loops? Add more .md files here. -->",
-              "",
-              "## Goal",
-              "",
-              "<!-- Describe what you want to optimize. Be specific about what 'better' means. -->",
-              "",
-              "REPLACE THIS with your optimization goal.",
-              "",
-              "## Target",
-              "",
-              "<!-- List files Autoloop may modify. Everything else is off-limits. -->",
-              "",
-              "Only modify these files:",
-              f"- {bt}REPLACE_WITH_FILE{bt} -- (describe what this file does)",
-              "",
-              "Do NOT modify:",
-              "- (list files that must not be touched)",
-              "",
-              "## Evaluation",
-              "",
-              "<!-- Provide a command and the metric to extract. -->",
-              "",
-              f"{bt}{bt}{bt}bash",
-              "REPLACE_WITH_YOUR_EVALUATION_COMMAND",
-              f"{bt}{bt}{bt}",
-              "",
-              f"The metric is {bt}REPLACE_WITH_METRIC_NAME{bt}. **Lower/Higher is better.** (pick one)",
-              "",
-          ])
-          with open(template_file, "w") as f:
-              f.write(template)
-          # Leave the template unstaged — the agent will create a draft PR with it
-          print(f"BOOTSTRAPPED: created {template_file} locally (agent will create a draft PR)")
-
-      # Find all program files from all locations:
-      # 1. Directory-based programs: .autoloop/programs/<name>/program.md (preferred)
-      # 2. Bare markdown programs: .autoloop/programs/<name>.md (simple)
-      # 3. Issue-based programs: GitHub issues with the 'autoloop-program' label
-      program_files = []
-      issue_programs = {}  # name -> {issue_number, file}
-
-      # Scan .autoloop/programs/ for directory-based programs
-      if os.path.isdir(programs_dir):
-          for entry in sorted(os.listdir(programs_dir)):
-              prog_dir = os.path.join(programs_dir, entry)
-              if os.path.isdir(prog_dir):
-                  # Look for program.md inside the directory
-                  prog_file = os.path.join(prog_dir, "program.md")
-                  if os.path.isfile(prog_file):
-                      program_files.append(prog_file)
-
-      # Scan .autoloop/programs/ for bare markdown programs
-      bare_programs = sorted(glob.glob(os.path.join(autoloop_dir, "*.md")))
-      for pf in bare_programs:
-          program_files.append(pf)
-
-      # Scan GitHub issues with the 'autoloop-program' label
-      issue_programs_dir = "/tmp/gh-aw/issue-programs"
-      os.makedirs(issue_programs_dir, exist_ok=True)
-      try:
-          api_url = f"https://api.github.com/repos/{repo}/issues?labels=autoloop-program&state=open&per_page=100"
-          req = urllib.request.Request(api_url, headers={
-              "Authorization": f"token {github_token}",
-              "Accept": "application/vnd.github.v3+json",
-          })
-          with urllib.request.urlopen(req, timeout=30) as resp:
-              issues = json.loads(resp.read().decode())
-          for issue in issues:
-              if issue.get("pull_request"):
-                  continue  # skip PRs
-              body = issue.get("body") or ""
-              title = issue.get("title") or ""
-              number = issue["number"]
-              # Derive program name from issue title: slugify to lowercase with hyphens
-              slug = re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-')
-              slug = re.sub(r'-+', '-', slug)  # collapse consecutive hyphens
-              if not slug:
-                  slug = f"issue-{number}"
-              # Avoid slug collisions: if another issue already claimed this slug, append issue number
-              if slug in issue_programs:
-                  print(f"  Warning: slug '{slug}' (issue #{number}) collides with issue #{issue_programs[slug]['issue_number']}, appending issue number")
-                  slug = f"{slug}-{number}"
-              # Write issue body to a temp file so the scheduling loop can process it
-              issue_file = os.path.join(issue_programs_dir, f"{slug}.md")
-              with open(issue_file, "w") as f:
-                  f.write(body)
-              program_files.append(issue_file)
-              issue_programs[slug] = {"issue_number": number, "file": issue_file, "title": title}
-              print(f"  Found issue-based program: '{slug}' (issue #{number})")
-      except Exception as e:
-          print(f"  Warning: could not fetch issue-based programs: {e}")
-
-      if not program_files:
-          # Fallback to single-file locations
-          for path in [".autoloop/program.md", "program.md"]:
-              if os.path.isfile(path):
-                  program_files = [path]
-                  break
-
-      if not program_files:
-          print("NO_PROGRAMS_FOUND")
-          os.makedirs("/tmp/gh-aw", exist_ok=True)
-          with open("/tmp/gh-aw/autoloop.json", "w") as f:
-              json.dump({"due": [], "skipped": [], "unconfigured": [], "no_programs": True}, f)
-          sys.exit(0)
-
-      os.makedirs("/tmp/gh-aw", exist_ok=True)
-      now = datetime.now(timezone.utc)
-      due = []
-      skipped = []
-      unconfigured = []
-      all_programs = {}  # name -> file path (populated during scanning)
-
-      # Schedule string to timedelta
-      def parse_schedule(s):
-          s = s.strip().lower()
-          m = re.match(r"every\s+(\d+)\s*h", s)
-          if m:
-              return timedelta(hours=int(m.group(1)))
-          m = re.match(r"every\s+(\d+)\s*m", s)
-          if m:
-              return timedelta(minutes=int(m.group(1)))
-          if s == "daily":
-              return timedelta(hours=24)
-          if s == "weekly":
-              return timedelta(days=7)
-          return None  # No per-program schedule — always due
-
-      def get_program_name(pf):
-          """Extract program name from file path.
-          Directory-based: .autoloop/programs/<name>/program.md -> <name>
-          Bare markdown: .autoloop/programs/<name>.md -> <name>
-          Issue-based: /tmp/gh-aw/issue-programs/<name>.md -> <name>
-          """
-          if pf.endswith("/program.md"):
-              # Directory-based program: name is the parent directory
-              return os.path.basename(os.path.dirname(pf))
-          else:
-              # Bare markdown or issue-based program: name is the filename without .md
-              return os.path.splitext(os.path.basename(pf))[0]
-
-      for pf in program_files:
-          name = get_program_name(pf)
-          all_programs[name] = pf
-          with open(pf) as f:
-              content = f.read()
-
-          # Check sentinel (skip for issue-based programs which use AUTOLOOP:ISSUE-PROGRAM)
-          if "<!-- AUTOLOOP:UNCONFIGURED -->" in content:
-              unconfigured.append(name)
-              continue
-
-          # Check for TODO/REPLACE placeholders
-          if re.search(r'\bTODO\b|\bREPLACE', content):
-              unconfigured.append(name)
-              continue
-
-          # Parse optional YAML frontmatter for schedule and target-metric
-          # Strip leading HTML comments before checking (issue-based programs may have them)
-          content_stripped = re.sub(r'^(\s*<!--.*?-->\s*\n)*', '', content, flags=re.DOTALL)
-          schedule_delta = None
-          target_metric = None
-          fm_match = re.match(r"^---\s*\n(.*?)\n---\s*\n", content_stripped, re.DOTALL)
-          if fm_match:
-              for line in fm_match.group(1).split("\n"):
-                  if line.strip().startswith("schedule:"):
-                      schedule_str = line.split(":", 1)[1].strip()
-                      schedule_delta = parse_schedule(schedule_str)
-                  if line.strip().startswith("target-metric:"):
-                      try:
-                          target_metric = float(line.split(":", 1)[1].strip())
-                      except (ValueError, TypeError):
-                          print(f"  Warning: {name} has invalid target-metric value: {line.split(':', 1)[1].strip()}")
-
-          # Read state from repo-memory
-          state = read_program_state(name)
-          if state:
-              print(f"  {name}: last_run={state.get('last_run')}, iteration_count={state.get('iteration_count')}")
-          else:
-              print(f"  {name}: no state found (first run)")
-
-          last_run = None
-          lr = state.get("last_run")
-          if lr:
-              try:
-                  last_run = datetime.fromisoformat(lr.replace("Z", "+00:00"))
-              except ValueError:
-                  pass
-
-          # Check if completed (target metric was reached)
-          if str(state.get("completed", "")).lower() == "true":
-              skipped.append({"name": name, "reason": f"completed: target metric reached"})
-              continue
-
-          # Check if paused (e.g., plateau or recurring errors)
-          if state.get("paused"):
-              skipped.append({"name": name, "reason": f"paused: {state.get('pause_reason', 'unknown')}"})
-              continue
-
-          # Auto-pause on plateau: 5+ consecutive rejections
-          recent = state.get("recent_statuses", [])[-5:]
-          if len(recent) >= 5 and all(s == "rejected" for s in recent):
-              skipped.append({"name": name, "reason": "plateau: 5 consecutive rejections"})
-              continue
-
-          # Check if due based on per-program schedule
-          if schedule_delta and last_run:
-              if now - last_run < schedule_delta:
-                  skipped.append({"name": name, "reason": "not due yet",
-                                  "next_due": (last_run + schedule_delta).isoformat()})
-                  continue
-
-          due.append({"name": name, "last_run": lr, "file": pf, "target_metric": target_metric})
-
-      # Pick the program to run
-      selected = None
-      selected_file = None
-      selected_issue = None
-      selected_target_metric = None
-      deferred = []
-
-      if forced_program:
-          # Manual dispatch requested a specific program — bypass scheduling
-          # (paused, not-due, and plateau programs can still be forced)
-          if forced_program not in all_programs:
-              print(f"ERROR: requested program '{forced_program}' not found.")
-              print(f"  Available programs: {list(all_programs.keys())}")
-              sys.exit(1)
-          if forced_program in unconfigured:
-              print(f"ERROR: requested program '{forced_program}' is unconfigured (has placeholders).")
-              sys.exit(1)
-          selected = forced_program
-          selected_file = all_programs[forced_program]
-          deferred = [p["name"] for p in due if p["name"] != forced_program]
-          if selected in issue_programs:
-              selected_issue = issue_programs[selected]["issue_number"]
-          # Find target_metric: check the due list first, then parse from the program file
-          for p in due:
-              if p["name"] == forced_program:
-                  selected_target_metric = p.get("target_metric")
-                  break
-          if selected_target_metric is None:
-              # Program may have been skipped (completed/paused/plateau) — parse directly
-              try:
-                  with open(selected_file) as _f:
-                      _content = _f.read()
-                  _content_stripped = re.sub(r'^(\s*<!--.*?-->\s*\n)*', '', _content, flags=re.DOTALL)
-                  _fm = re.match(r"^---\s*\n(.*?)\n---\s*\n", _content_stripped, re.DOTALL)
-                  if _fm:
-                      for _line in _fm.group(1).split("\n"):
-                          if _line.strip().startswith("target-metric:"):
-                              selected_target_metric = float(_line.split(":", 1)[1].strip())
-                              break
-              except (OSError, ValueError, TypeError):
-                  pass
-          print(f"FORCED: running program '{forced_program}' (manual dispatch)")
-      elif due:
-          # Normal scheduling: pick the single most-overdue program
-          due.sort(key=lambda p: p["last_run"] or "")  # None/empty sorts first (never run)
-          selected = due[0]["name"]
-          selected_file = due[0]["file"]
-          selected_target_metric = due[0].get("target_metric")
-          deferred = [p["name"] for p in due[1:]]
-          # Check if the selected program is issue-based
-          if selected in issue_programs:
-              selected_issue = issue_programs[selected]["issue_number"]
-
-      result = {
-          "selected": selected,
-          "selected_file": selected_file,
-          "selected_issue": selected_issue,
-          "selected_target_metric": selected_target_metric,
-          "issue_programs": {name: info["issue_number"] for name, info in issue_programs.items()},
-          "deferred": deferred,
-          "skipped": skipped,
-          "unconfigured": unconfigured,
-          "no_programs": False,
+      function parseMachineState(content) {
+          const state = {};
+          const sectionMatch = content.match(/## ⚙️ Machine State[^\n]*\n([\s\S]*?)(?=\n## |$)/);
+          if (!sectionMatch) return state;
+          const section = sectionMatch[0];
+          const rowRegex = /\|\s*(.+?)\s*\|\s*(.+?)\s*\|/g;
+          let row;
+          while ((row = rowRegex.exec(section)) !== null) {
+              const rawKey = row[1].trim();
+              const rawVal = row[2].trim();
+              if (['field', '---', ':---', ':---:', '---:'].includes(rawKey.toLowerCase())) continue;
+              const key = rawKey.toLowerCase().replace(/ /g, '_');
+              const val = ['\u2014', '-', ''].includes(rawVal) ? null : rawVal;
+              state[key] = val;
+          }
+          // Coerce types
+          for (const intField of ['iteration_count', 'consecutive_errors']) {
+              if (intField in state) {
+                  const n = parseInt(state[intField], 10);
+                  state[intField] = isNaN(n) ? 0 : n;
+              }
+          }
+          if ('paused' in state) {
+              state.paused = String(state.paused || '').toLowerCase() === 'true';
+          }
+          if ('completed' in state) {
+              state.completed = String(state.completed || '').toLowerCase() === 'true';
+          }
+          // recent_statuses: stored as comma-separated words (e.g. "accepted, rejected, error")
+          const rsRaw = state.recent_statuses || '';
+          if (rsRaw) {
+              state.recent_statuses = rsRaw.split(',').map(s => s.trim().toLowerCase()).filter(s => s);
+          } else {
+              state.recent_statuses = [];
+          }
+          return state;
       }
 
-      os.makedirs("/tmp/gh-aw", exist_ok=True)
-      with open("/tmp/gh-aw/autoloop.json", "w") as f:
-          json.dump(result, f, indent=2)
+      function readProgramState(programName) {
+          const stateFile = path.join(repoMemoryDir, programName + '.md');
+          try {
+              if (!fs.statSync(stateFile).isFile()) {
+                  console.log('  ' + programName + ': no state file found (first run)');
+                  return {};
+              }
+          } catch (e) {
+              console.log('  ' + programName + ': no state file found (first run)');
+              return {};
+          }
+          const content = fs.readFileSync(stateFile, 'utf-8');
+          return parseMachineState(content);
+      }
 
-      print("=== Autoloop Program Check ===")
-      print(f"Selected program:      {selected or '(none)'} ({selected_file or 'n/a'})")
-      print(f"Deferred (next run):   {deferred or '(none)'}")
-      print(f"Programs skipped:      {[s['name'] for s in skipped] or '(none)'}")
-      print(f"Programs unconfigured: {unconfigured or '(none)'}")
+      // Schedule string to milliseconds
+      function parseSchedule(s) {
+          s = s.trim().toLowerCase();
+          let m = s.match(/^every\s+(\d+)\s*h/);
+          if (m) return parseInt(m[1], 10) * 3600 * 1000;
+          m = s.match(/^every\s+(\d+)\s*m/);
+          if (m) return parseInt(m[1], 10) * 60 * 1000;
+          if (s === 'daily') return 24 * 3600 * 1000;
+          if (s === 'weekly') return 7 * 24 * 3600 * 1000;
+          return null;
+      }
 
-      if not selected and not unconfigured:
-          print("\nNo programs due this run. Exiting early.")
-          sys.exit(1)  # Non-zero exit skips the agent step
-      PYEOF
+      function getProgramName(pf) {
+          // Extract program name from file path.
+          // Directory-based: .autoloop/programs/<name>/program.md -> <name>
+          // Bare markdown: .autoloop/programs/<name>.md -> <name>
+          // Issue-based: /tmp/gh-aw/issue-programs/<name>.md -> <name>
+          if (pf.endsWith('/program.md')) {
+              return path.basename(path.dirname(pf));
+          } else {
+              return path.parse(pf).name;
+          }
+      }
+
+      // Main execution
+      async function main() {
+          // Bootstrap: create autoloop programs directory and template if missing
+          if (!fs.existsSync(autoloopDir)) {
+              fs.mkdirSync(autoloopDir, { recursive: true });
+              const bt = String.fromCharCode(96); // backtick -- avoid literal backticks that break gh-aw compiler
+              const template = [
+                  '<!-- AUTOLOOP:UNCONFIGURED -->',
+                  '<!-- Remove the line above once you have filled in your program. -->',
+                  '<!-- Autoloop will NOT run until you do. -->',
+                  '',
+                  '# Autoloop Program',
+                  '',
+                  '<!-- Rename this file to something meaningful (e.g. training.md, coverage.md).',
+                  '     The filename (minus .md) becomes the program name used in issues, PRs,',
+                  '     and slash commands. Want multiple loops? Add more .md files here. -->',
+                  '',
+                  '## Goal',
+                  '',
+                  "<!-- Describe what you want to optimize. Be specific about what 'better' means. -->",
+                  '',
+                  'REPLACE THIS with your optimization goal.',
+                  '',
+                  '## Target',
+                  '',
+                  '<!-- List files Autoloop may modify. Everything else is off-limits. -->',
+                  '',
+                  'Only modify these files:',
+                  '- ' + bt + 'REPLACE_WITH_FILE' + bt + ' -- (describe what this file does)',
+                  '',
+                  'Do NOT modify:',
+                  '- (list files that must not be touched)',
+                  '',
+                  '## Evaluation',
+                  '',
+                  '<!-- Provide a command and the metric to extract. -->',
+                  '',
+                  bt + bt + bt + 'bash',
+                  'REPLACE_WITH_YOUR_EVALUATION_COMMAND',
+                  bt + bt + bt,
+                  '',
+                  'The metric is ' + bt + 'REPLACE_WITH_METRIC_NAME' + bt + '. **Lower/Higher is better.** (pick one)',
+                  '',
+              ].join('\n');
+              fs.writeFileSync(templateFile, template);
+              console.log('BOOTSTRAPPED: created ' + templateFile + ' locally (agent will create a draft PR)');
+          }
+
+          // Find all program files from all locations:
+          // 1. Directory-based programs: .autoloop/programs/<name>/program.md (preferred)
+          // 2. Bare markdown programs: .autoloop/programs/<name>.md (simple)
+          // 3. Issue-based programs: GitHub issues with the 'autoloop-program' label
+          let programFiles = [];
+          const issuePrograms = {};
+
+          // Scan .autoloop/programs/ for directory-based programs
+          if (fs.existsSync(programsDir)) {
+              try {
+                  if (fs.statSync(programsDir).isDirectory()) {
+                      const entries = fs.readdirSync(programsDir).sort();
+                      for (const entry of entries) {
+                          const progDir = path.join(programsDir, entry);
+                          try {
+                              if (fs.statSync(progDir).isDirectory()) {
+                                  const progFile = path.join(progDir, 'program.md');
+                                  try {
+                                      if (fs.statSync(progFile).isFile()) {
+                                          programFiles.push(progFile);
+                                      }
+                                  } catch (e) { /* file doesn't exist */ }
+                              }
+                          } catch (e) { /* stat failed */ }
+                      }
+                  }
+              } catch (e) { /* stat failed */ }
+          }
+
+          // Scan .autoloop/programs/ for bare markdown programs
+          if (fs.existsSync(autoloopDir)) {
+              try {
+                  if (fs.statSync(autoloopDir).isDirectory()) {
+                      const barePrograms = fs.readdirSync(autoloopDir)
+                          .filter(f => f.endsWith('.md'))
+                          .sort()
+                          .map(f => path.join(autoloopDir, f));
+                      for (const pf of barePrograms) {
+                          programFiles.push(pf);
+                      }
+                  }
+              } catch (e) { /* stat failed */ }
+          }
+
+          // Scan GitHub issues with the 'autoloop-program' label
+          const issueProgramsDir = '/tmp/gh-aw/issue-programs';
+          fs.mkdirSync(issueProgramsDir, { recursive: true });
+          try {
+              const apiUrl = 'https://api.github.com/repos/' + repo + '/issues?labels=autoloop-program&state=open&per_page=100';
+              const response = await fetch(apiUrl, {
+                  headers: {
+                      'Authorization': 'token ' + githubToken,
+                      'Accept': 'application/vnd.github.v3+json',
+                  },
+              });
+              const issues = await response.json();
+              for (const issue of issues) {
+                  if (issue.pull_request) continue; // skip PRs
+                  const body = issue.body || '';
+                  const title = issue.title || '';
+                  const number = issue.number;
+                  // Derive program name from issue title: slugify to lowercase with hyphens
+                  let slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+                  slug = slug.replace(/-+/g, '-'); // collapse consecutive hyphens
+                  if (!slug) slug = 'issue-' + number;
+                  // Avoid slug collisions: if another issue already claimed this slug, append issue number
+                  if (slug in issuePrograms) {
+                      console.log("  Warning: slug '" + slug + "' (issue #" + number + ") collides with issue #" + issuePrograms[slug].issue_number + ", appending issue number");
+                      slug = slug + '-' + number;
+                  }
+                  // Write issue body to a temp file so the scheduling loop can process it
+                  const issueFile = path.join(issueProgramsDir, slug + '.md');
+                  fs.writeFileSync(issueFile, body);
+                  programFiles.push(issueFile);
+                  issuePrograms[slug] = { issue_number: number, file: issueFile, title: title };
+                  console.log("  Found issue-based program: '" + slug + "' (issue #" + number + ")");
+              }
+          } catch (e) {
+              console.log('  Warning: could not fetch issue-based programs: ' + e.message);
+          }
+
+          if (programFiles.length === 0) {
+              // Fallback to single-file locations
+              for (const p of ['.autoloop/program.md', 'program.md']) {
+                  try {
+                      if (fs.statSync(p).isFile()) {
+                          programFiles = [p];
+                          break;
+                      }
+                  } catch (e) { /* file doesn't exist */ }
+              }
+          }
+
+          if (programFiles.length === 0) {
+              console.log('NO_PROGRAMS_FOUND');
+              fs.mkdirSync('/tmp/gh-aw', { recursive: true });
+              fs.writeFileSync('/tmp/gh-aw/autoloop.json', JSON.stringify(
+                  { due: [], skipped: [], unconfigured: [], no_programs: true }
+              ));
+              process.exit(0);
+          }
+
+          fs.mkdirSync('/tmp/gh-aw', { recursive: true });
+          const now = new Date();
+          const due = [];
+          const skipped = [];
+          const unconfigured = [];
+          const allPrograms = {};
+
+          for (const pf of programFiles) {
+              const name = getProgramName(pf);
+              allPrograms[name] = pf;
+              const content = fs.readFileSync(pf, 'utf-8');
+
+              // Check sentinel (skip for issue-based programs which use AUTOLOOP:ISSUE-PROGRAM)
+              if (content.includes('<!-- AUTOLOOP:UNCONFIGURED -->')) {
+                  unconfigured.push(name);
+                  continue;
+              }
+
+              // Check for TODO/REPLACE placeholders
+              if (/\bTODO\b|\bREPLACE/.test(content)) {
+                  unconfigured.push(name);
+                  continue;
+              }
+
+              // Parse optional YAML frontmatter for schedule and target-metric
+              // Strip leading HTML comments before checking (issue-based programs may have them)
+              const contentStripped = content.replace(/^(\s*<!--[\s\S]*?-->\s*\n)*/, '');
+              let scheduleDelta = null;
+              let targetMetric = null;
+              const fmMatch = contentStripped.match(/^---\s*\n([\s\S]*?)\n---\s*\n/);
+              if (fmMatch) {
+                  for (const line of fmMatch[1].split('\n')) {
+                      if (line.trim().startsWith('schedule:')) {
+                          const scheduleStr = line.substring(line.indexOf(':') + 1).trim();
+                          scheduleDelta = parseSchedule(scheduleStr);
+                      }
+                      if (line.trim().startsWith('target-metric:')) {
+                          const val = parseFloat(line.substring(line.indexOf(':') + 1).trim());
+                          if (!isNaN(val)) {
+                              targetMetric = val;
+                          } else {
+                              console.log('  Warning: ' + name + ' has invalid target-metric value: ' + line.substring(line.indexOf(':') + 1).trim());
+                          }
+                      }
+                  }
+              }
+
+              // Read state from repo-memory
+              const state = readProgramState(name);
+              if (state && Object.keys(state).length > 0) {
+                  console.log('  ' + name + ': last_run=' + (state.last_run || null) + ', iteration_count=' + (state.iteration_count != null ? state.iteration_count : null));
+              } else {
+                  console.log('  ' + name + ': no state found (first run)');
+              }
+
+              let lastRun = null;
+              const lr = state.last_run || null;
+              if (lr) {
+                  try {
+                      const d = new Date(lr.endsWith('Z') ? lr : lr.replace('Z', '+00:00'));
+                      if (!isNaN(d.getTime())) lastRun = d;
+                  } catch (e) {
+                      // ignore invalid date
+                  }
+              }
+
+              // Check if completed (target metric was reached)
+              if (String(state.completed || '').toLowerCase() === 'true') {
+                  skipped.push({ name: name, reason: 'completed: target metric reached' });
+                  continue;
+              }
+
+              // Check if paused (e.g., plateau or recurring errors)
+              if (state.paused) {
+                  skipped.push({ name: name, reason: 'paused: ' + (state.pause_reason || 'unknown') });
+                  continue;
+              }
+
+              // Auto-pause on plateau: 5+ consecutive rejections
+              const recent = (state.recent_statuses || []).slice(-5);
+              if (recent.length >= 5 && recent.every(s => s === 'rejected')) {
+                  skipped.push({ name: name, reason: 'plateau: 5 consecutive rejections' });
+                  continue;
+              }
+
+              // Check if due based on per-program schedule
+              if (scheduleDelta && lastRun) {
+                  if (now.getTime() - lastRun.getTime() < scheduleDelta) {
+                      skipped.push({
+                          name: name,
+                          reason: 'not due yet',
+                          next_due: new Date(lastRun.getTime() + scheduleDelta).toISOString(),
+                      });
+                      continue;
+                  }
+              }
+
+              due.push({ name: name, last_run: lr, file: pf, target_metric: targetMetric });
+          }
+
+          // Pick the program to run
+          let selected = null;
+          let selectedFile = null;
+          let selectedIssue = null;
+          let selectedTargetMetric = null;
+          let deferred = [];
+
+          if (forcedProgram) {
+              // Manual dispatch requested a specific program -- bypass scheduling
+              // (paused, not-due, and plateau programs can still be forced)
+              if (!(forcedProgram in allPrograms)) {
+                  console.log("ERROR: requested program '" + forcedProgram + "' not found.");
+                  console.log('  Available programs: ' + JSON.stringify(Object.keys(allPrograms)));
+                  process.exit(1);
+              }
+              if (unconfigured.includes(forcedProgram)) {
+                  console.log("ERROR: requested program '" + forcedProgram + "' is unconfigured (has placeholders).");
+                  process.exit(1);
+              }
+              selected = forcedProgram;
+              selectedFile = allPrograms[forcedProgram];
+              deferred = due.filter(p => p.name !== forcedProgram).map(p => p.name);
+              if (selected in issuePrograms) {
+                  selectedIssue = issuePrograms[selected].issue_number;
+              }
+              // Find target_metric: check the due list first, then parse from the program file
+              for (const p of due) {
+                  if (p.name === forcedProgram) {
+                      selectedTargetMetric = p.target_metric || null;
+                      break;
+                  }
+              }
+              if (selectedTargetMetric === null) {
+                  // Program may have been skipped (completed/paused/plateau) -- parse directly
+                  try {
+                      const _content = fs.readFileSync(selectedFile, 'utf-8');
+                      const _contentStripped = _content.replace(/^(\s*<!--[\s\S]*?-->\s*\n)*/, '');
+                      const _fm = _contentStripped.match(/^---\s*\n([\s\S]*?)\n---\s*\n/);
+                      if (_fm) {
+                          for (const _line of _fm[1].split('\n')) {
+                              if (_line.trim().startsWith('target-metric:')) {
+                                  const val = parseFloat(_line.substring(_line.indexOf(':') + 1).trim());
+                                  if (!isNaN(val)) {
+                                      selectedTargetMetric = val;
+                                      break;
+                                  }
+                              }
+                          }
+                      }
+                  } catch (e) { /* ignore */ }
+              }
+              console.log("FORCED: running program '" + forcedProgram + "' (manual dispatch)");
+          } else if (due.length > 0) {
+              // Normal scheduling: pick the single most-overdue program
+              due.sort((a, b) => (a.last_run || '').localeCompare(b.last_run || '')); // null/empty sorts first (never run)
+              selected = due[0].name;
+              selectedFile = due[0].file;
+              selectedTargetMetric = due[0].target_metric || null;
+              deferred = due.slice(1).map(p => p.name);
+              // Check if the selected program is issue-based
+              if (selected in issuePrograms) {
+                  selectedIssue = issuePrograms[selected].issue_number;
+              }
+          }
+
+          const issueProgramsMap = {};
+          for (const [name, info] of Object.entries(issuePrograms)) {
+              issueProgramsMap[name] = info.issue_number;
+          }
+
+          const result = {
+              selected: selected,
+              selected_file: selectedFile,
+              selected_issue: selectedIssue,
+              selected_target_metric: selectedTargetMetric,
+              issue_programs: issueProgramsMap,
+              deferred: deferred,
+              skipped: skipped,
+              unconfigured: unconfigured,
+              no_programs: false,
+          };
+
+          fs.mkdirSync('/tmp/gh-aw', { recursive: true });
+          fs.writeFileSync('/tmp/gh-aw/autoloop.json', JSON.stringify(result, null, 2));
+
+          console.log('=== Autoloop Program Check ===');
+          console.log('Selected program:      ' + (selected || '(none)') + ' (' + (selectedFile || 'n/a') + ')');
+          console.log('Deferred (next run):   ' + (deferred.length > 0 ? JSON.stringify(deferred) : '(none)'));
+          console.log('Programs skipped:      ' + (skipped.length > 0 ? JSON.stringify(skipped.map(s => s.name)) : '(none)'));
+          console.log('Programs unconfigured: ' + (unconfigured.length > 0 ? JSON.stringify(unconfigured) : '(none)'));
+
+          if (!selected && unconfigured.length === 0) {
+              console.log('\nNo programs due this run. Exiting early.');
+              process.exit(1); // Non-zero exit skips the agent step
+          }
+      }
+
+      main().catch(err => { console.error(err.message || err); process.exit(1); });
+      JSEOF
 
 source: githubnext/autoloop
 engine: copilot
