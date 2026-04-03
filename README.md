@@ -220,4 +220,5 @@ We don't accept pull requests for this project. Instead, we ask that you use a c
 
 ## Credits
 
+- Inspired by [Karpathy's Autoresearch](https://github.com/karpathy/autoresearch). The `autoresearch` example program is based on that project.
 - Some of the examples in the `.autoloop/programs` folder are from [OpenEvolve](https://github.com/algorithmicsuperintelligence/openevolve/tree/main/examples).
