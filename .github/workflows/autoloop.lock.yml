@@ -29,7 +29,6 @@
 # - Persists all state via repo-memory (human-readable, human-editable)
 # - Commits accepted improvements to a long-running branch per program
 # - Maintains a single draft PR per program that accumulates all accepted iterations
-# - Maintains a living experiment log as a GitHub issue
 #
 # Source: githubnext/autoloop
 #
@@ -238,7 +237,7 @@ jobs:
           cat "${RUNNER_TEMP}/gh-aw/prompts/safe_outputs_prompt.md"
           cat << 'GH_AW_PROMPT_25eda8a50024125e_EOF'
           <safe-output-tools>
-          Tools: add_comment(max:7), create_issue(max:2), update_issue(max:3), create_pull_request(max:2), add_labels(max:2), remove_labels(max:2), push_to_pull_request_branch(max:2), missing_tool, missing_data, noop
+          Tools: add_comment(max:7), create_issue(max:1), update_issue(max:3), create_pull_request(max:2), add_labels(max:2), remove_labels(max:2), push_to_pull_request_branch(max:2), missing_tool, missing_data, noop
           GH_AW_PROMPT_25eda8a50024125e_EOF
           cat "${RUNNER_TEMP}/gh-aw/prompts/safe_outputs_create_pull_request.md"
           cat "${RUNNER_TEMP}/gh-aw/prompts/safe_outputs_push_to_pr_branch.md"
@@ -490,7 +489,7 @@ jobs:
           mkdir -p /tmp/gh-aw/safeoutputs
           mkdir -p /tmp/gh-aw/mcp-logs/safeoutputs
           cat > ${RUNNER_TEMP}/gh-aw/safeoutputs/config.json << 'GH_AW_SAFE_OUTPUTS_CONFIG_4cb88c61a21f151b_EOF'
-          {"add_comment":{"hide_older_comments":false,"max":7,"target":"*"},"add_labels":{"max":2,"target":"*"},"create_issue":{"labels":["automation","autoloop"],"max":2,"title_prefix":"[Autoloop] "},"create_pull_request":{"draft":true,"labels":["automation","autoloop"],"max":2,"max_patch_size":1024,"protected_files":["package.json","bun.lockb","bunfig.toml","deno.json","deno.jsonc","deno.lock","global.json","NuGet.Config","Directory.Packages.props","mix.exs","mix.lock","go.mod","go.sum","stack.yaml","stack.yaml.lock","pom.xml","build.gradle","build.gradle.kts","settings.gradle","settings.gradle.kts","gradle.properties","package-lock.json","yarn.lock","pnpm-lock.yaml","npm-shrinkwrap.json","requirements.txt","Pipfile","Pipfile.lock","pyproject.toml","setup.py","setup.cfg","Gemfile","Gemfile.lock","uv.lock","CODEOWNERS"],"protected_files_policy":"fallback-to-issue","protected_path_prefixes":[".github/",".agents/"],"title_prefix":"[Autoloop] "},"missing_data":{},"missing_tool":{},"noop":{"max":1,"report-as-issue":"true"},"push_repo_memory":{"memories":[{"dir":"/tmp/gh-aw/repo-memory/default","id":"default","max_file_count":100,"max_file_size":10240,"max_patch_size":10240}]},"push_to_pull_request_branch":{"if_no_changes":"warn","max":2,"max_patch_size":1024,"protected_files":["package.json","bun.lockb","bunfig.toml","deno.json","deno.jsonc","deno.lock","global.json","NuGet.Config","Directory.Packages.props","mix.exs","mix.lock","go.mod","go.sum","stack.yaml","stack.yaml.lock","pom.xml","build.gradle","build.gradle.kts","settings.gradle","settings.gradle.kts","gradle.properties","package-lock.json","yarn.lock","pnpm-lock.yaml","npm-shrinkwrap.json","requirements.txt","Pipfile","Pipfile.lock","pyproject.toml","setup.py","setup.cfg","Gemfile","Gemfile.lock","uv.lock","CODEOWNERS"],"protected_path_prefixes":[".github/",".agents/"],"target":"*","title_prefix":"[Autoloop] "},"remove_labels":{"max":2,"target":"*"},"update_issue":{"allow_body":true,"max":3,"target":"*","title_prefix":"[Autoloop] "}}
+          {"add_comment":{"hide_older_comments":false,"max":7,"target":"*"},"add_labels":{"max":2,"target":"*"},"create_issue":{"labels":["automation","autoloop"],"max":1,"title_prefix":"[Autoloop] "},"create_pull_request":{"draft":true,"labels":["automation","autoloop"],"max":2,"max_patch_size":1024,"protected_files":["package.json","bun.lockb","bunfig.toml","deno.json","deno.jsonc","deno.lock","global.json","NuGet.Config","Directory.Packages.props","mix.exs","mix.lock","go.mod","go.sum","stack.yaml","stack.yaml.lock","pom.xml","build.gradle","build.gradle.kts","settings.gradle","settings.gradle.kts","gradle.properties","package-lock.json","yarn.lock","pnpm-lock.yaml","npm-shrinkwrap.json","requirements.txt","Pipfile","Pipfile.lock","pyproject.toml","setup.py","setup.cfg","Gemfile","Gemfile.lock","uv.lock","CODEOWNERS"],"protected_files_policy":"fallback-to-issue","protected_path_prefixes":[".github/",".agents/"],"title_prefix":"[Autoloop] "},"missing_data":{},"missing_tool":{},"noop":{"max":1,"report-as-issue":"true"},"push_repo_memory":{"memories":[{"dir":"/tmp/gh-aw/repo-memory/default","id":"default","max_file_count":100,"max_file_size":10240,"max_patch_size":10240}]},"push_to_pull_request_branch":{"if_no_changes":"warn","max":2,"max_patch_size":1024,"protected_files":["package.json","bun.lockb","bunfig.toml","deno.json","deno.jsonc","deno.lock","global.json","NuGet.Config","Directory.Packages.props","mix.exs","mix.lock","go.mod","go.sum","stack.yaml","stack.yaml.lock","pom.xml","build.gradle","build.gradle.kts","settings.gradle","settings.gradle.kts","gradle.properties","package-lock.json","yarn.lock","pnpm-lock.yaml","npm-shrinkwrap.json","requirements.txt","Pipfile","Pipfile.lock","pyproject.toml","setup.py","setup.cfg","Gemfile","Gemfile.lock","uv.lock","CODEOWNERS"],"protected_path_prefixes":[".github/",".agents/"],"target":"*","title_prefix":"[Autoloop] "},"remove_labels":{"max":2,"target":"*"},"update_issue":{"allow_body":true,"max":3,"target":"*","title_prefix":"[Autoloop] "}}
           GH_AW_SAFE_OUTPUTS_CONFIG_4cb88c61a21f151b_EOF
       - name: Write Safe Outputs Tools
         run: |
@@ -499,7 +498,7 @@ jobs:
             "description_suffixes": {
               "add_comment": " CONSTRAINTS: Maximum 7 comment(s) can be added. Target: *.",
               "add_labels": " CONSTRAINTS: Maximum 2 label(s) can be added. Target: *.",
-              "create_issue": " CONSTRAINTS: Maximum 2 issue(s) can be created. Title will be prefixed with \"[Autoloop] \". Labels [\"automation\" \"autoloop\"] will be automatically added.",
+              "create_issue": " CONSTRAINTS: Maximum 1 issue(s) can be created. Title will be prefixed with \"[Autoloop] \". Labels [\"automation\" \"autoloop\"] will be automatically added.",
               "create_pull_request": " CONSTRAINTS: Maximum 2 pull request(s) can be created. Title will be prefixed with \"[Autoloop] \". Labels [\"automation\" \"autoloop\"] will be automatically added. PRs will be created as drafts.",
               "push_to_pull_request_branch": " CONSTRAINTS: Maximum 2 push(es) can be made. The target pull request title must start with \"[Autoloop] \".",
               "remove_labels": " CONSTRAINTS: Maximum 2 label(s) can be removed. Target: *.",
@@ -1275,7 +1274,7 @@ jobs:
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           WORKFLOW_NAME: "Autoloop"
-          WORKFLOW_DESCRIPTION: "An iterative optimization loop inspired by Karpathy's Autoresearch and Claude Code's /loop.\nRuns on a configurable schedule to autonomously improve a target artifact toward a measurable goal.\nEach iteration: reads the program definition, proposes a change, evaluates against a metric,\nand accepts or rejects the change. Tracks all iterations in a rolling GitHub issue.\n- User defines the optimization goal and evaluation criteria in a program.md file\n- Accepts changes only when they improve the metric (ratchet pattern)\n- Persists all state via repo-memory (human-readable, human-editable)\n- Commits accepted improvements to a long-running branch per program\n- Maintains a single draft PR per program that accumulates all accepted iterations\n- Maintains a living experiment log as a GitHub issue"
+          WORKFLOW_DESCRIPTION: "An iterative optimization loop inspired by Karpathy's Autoresearch and Claude Code's /loop.\nRuns on a configurable schedule to autonomously improve a target artifact toward a measurable goal.\nEach iteration: reads the program definition, proposes a change, evaluates against a metric,\nand accepts or rejects the change.\n- User defines the optimization goal and evaluation criteria in a program.md file\n- Accepts changes only when they improve the metric (ratchet pattern)\n- Persists all state via repo-memory (human-readable, human-editable)\n- Commits accepted improvements to a long-running branch per program\n- Maintains a single draft PR per program that accumulates all accepted iterations"
           HAS_PATCH: ${{ needs.agent.outputs.has_patch }}
         with:
           script: |

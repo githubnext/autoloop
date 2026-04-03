@@ -24,7 +24,7 @@ Autoloop is a GitHub Agentic Workflow that runs iterative optimization loops. Ea
 .autoloop/programs/<program-name>.md
 ```
 
-A repository can have multiple programs running independently. Each gets its own schedule, metric tracking, experiment log issue, long-running branch (`autoloop/<program-name>`), and draft PR.
+A repository can have multiple programs running independently. Each gets its own schedule, metric tracking, long-running branch (`autoloop/<program-name>`), and draft PR.
 
 ## Step 1: Understand the Repository
 

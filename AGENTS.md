@@ -92,7 +92,7 @@ Programs can include an Evolution Strategy section (inspired by OpenEvolve) that
 - A **steering issue** per program (`[Autoloop: <program-name>] Steering`) links the branch, PR, and state together
 - All state lives in repo-memory — per-program state files on the `memory/autoloop` branch are the single source of truth for both scheduling/machine state and human-readable research context
 - State files: `<program-name>.md` on the `memory/autoloop` branch (per-program with Machine State table + research sections)
-- Experiment history is logged in GitHub issues titled `[Autoloop: <program-name>] Experiment Log`
+- Experiment history is tracked in the state file's Iteration History section and via per-run comments on the source issue (for issue-based programs)
 - The default branch is automatically merged into all `autoloop/*` branches whenever it changes
 - Issue-based programs are discovered via the `autoloop-program` label; the issue body is the program definition
 - For issue-based programs, a status comment (marked with `<!-- AUTOLOOP:STATUS -->`) is maintained on the source issue, and a per-run comment is posted after each iteration
