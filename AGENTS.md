@@ -80,9 +80,7 @@ Programs can include an Evolution Strategy section (inspired by OpenEvolve) that
 
 - **Agentic Workflows**: https://github.com/github/gh-aw
 - **Quick Start**: https://github.github.com/gh-aw/setup/quick-start/
-- **Autoloop Examples**: https://github.com/githubnext/autoloop_examples
-  - Function minimization: [code](https://github.com/githubnext/autoloop_examples/tree/main/examples/function_minimization), [actions run](https://github.com/githubnext/autoloop_examples/actions/runs/23503588936), [PR](https://github.com/githubnext/autoloop_examples/pull/4)
-  - Signal processing: [code](https://github.com/githubnext/autoloop_examples/tree/main/examples/signal_processing), [actions run](https://github.com/githubnext/autoloop_examples/actions/runs/23511458560), [PR](https://github.com/githubnext/autoloop_examples/pull/11)
+- **Autoloop Examples**: See the [example programs](.autoloop/programs/) included in this repo
 
 ## Conventions
 

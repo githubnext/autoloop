@@ -71,7 +71,6 @@ Minimizes validation bits-per-byte (`val_bpb`) for LLM pretraining within a fixe
 
 - **Metric**: `combined_score` = `1/val_bpb` (higher is better)
 - **Code**: [`.autoloop/programs/autoresearch/`](.autoloop/programs/autoresearch/)
-- **Example run**: [actions](https://github.com/githubnext/autoresearch_local/actions/runs/23924736866) | [PR](https://github.com/githubnext/autoresearch_local/pull/14)
 
 ### Function Minimization
 
@@ -79,7 +78,6 @@ Discovers optimization algorithms to find the global minimum of a multi-modal fu
 
 - **Metric**: `combined_score` (higher is better), baseline 0.56
 - **Code**: [`.autoloop/programs/function_minimization/`](.autoloop/programs/function_minimization/)
-- **Example run**: [actions](https://github.com/githubnext/autoloop_examples/actions/runs/23503588936) | [PR](https://github.com/githubnext/autoloop_examples/pull/4)
 
 ### Signal Processing
 
@@ -87,7 +85,6 @@ Discovers and optimizes real-time adaptive filtering algorithms for noisy, non-s
 
 - **Metric**: `overall_score` (higher is better), baseline 0.34
 - **Code**: [`.autoloop/programs/signal_processing/`](.autoloop/programs/signal_processing/)
-- **Example run**: [actions](https://github.com/githubnext/autoloop_examples/actions/runs/23511458560) | [PR](https://github.com/githubnext/autoloop_examples/pull/11)
 
 ### Circle Packing
 
