@@ -1,0 +1,36 @@
+# Configuration for Real-Time Adaptive Signal Processing Example
+max_iterations: 100
+checkpoint_interval: 10
+log_level: "INFO"
+
+llm:
+  primary_model: "gemini-2.5-flash-lite-preview-06-17"
+  primary_model_weight: 0.8
+  secondary_model: "gemini-2.5-flash"
+  secondary_model_weight: 0.2
+  api_base: "https://generativelanguage.googleapis.com/v1beta/openai/"
+  temperature: 0.6
+  top_p: 0.95
+  max_tokens: 32000
+
+prompt:
+  system_message: "You are an expert signal processing engineer specializing in real-time adaptive filtering algorithms. Your task is to improve a signal processing algorithm that filters volatile, non-stationary time series data while preserving genuine signal dynamics. Focus on minimizing noise, reducing lag, and maintaining trend fidelity across diverse signal types."
+  num_top_programs: 3
+  use_template_stochasticity: true
+
+database:
+  population_size: 80
+  archive_size: 30
+  num_islands: 4
+  elite_selection_ratio: 0.15
+  exploitation_ratio: 0.65
+
+evaluator:
+  timeout: 120
+  cascade_evaluation: true
+  cascade_thresholds: [0.3, 0.6]
+  parallel_evaluations: 4
+  use_llm_feedback: false
+
+diff_based_evolution: true
+max_code_length: 60000
