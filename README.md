@@ -140,7 +140,6 @@ Programs can be **open-ended** (run indefinitely, always optimizing) or **goal-o
    python3 .autoloop/programs/my-experiment/code/evaluate.py
    ```
    The metric is `score`. **Higher is better.**
-   ```
 
 3. The next scheduled run picks it up automatically. No other configuration needed.
 
