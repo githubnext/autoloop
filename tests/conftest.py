@@ -56,9 +56,9 @@ def _load_workflow_functions():
 def _call_js(func_name, *args):
     """Call a JS function from the extracted workflow module and return the result."""
     args_json = json.dumps(list(args))
-    escaped_path = _JS_MODULE_PATH.replace("\\", "\\\\")
+    escaped_path = json.dumps(_JS_MODULE_PATH)
     script = (
-        "const m = require('" + escaped_path + "');\n"
+        "const m = require(" + escaped_path + ");\n"
         "const result = m." + func_name + "(..." + args_json + ");\n"
         "process.stdout.write(JSON.stringify(result === undefined ? null : result));\n"
     )

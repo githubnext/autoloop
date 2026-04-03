@@ -117,7 +117,7 @@ steps:
               const rawVal = row[2].trim();
               if (['field', '---', ':---', ':---:', '---:'].includes(rawKey.toLowerCase())) continue;
               const key = rawKey.toLowerCase().replace(/ /g, '_');
-              const val = ['\u2014', '-', ''].includes(rawVal) ? null : rawVal;
+              const val = ['\u2014', '-', ''].includes(rawVal) ? null : rawVal; // \u2014 = em dash
               state[key] = val;
           }
           // Coerce types
@@ -391,7 +391,7 @@ steps:
               const lr = state.last_run || null;
               if (lr) {
                   try {
-                      const d = new Date(lr.endsWith('Z') ? lr : lr.replace('Z', '+00:00'));
+                      const d = new Date(lr);
                       if (!isNaN(d.getTime())) lastRun = d;
                   } catch (e) {
                       // ignore invalid date

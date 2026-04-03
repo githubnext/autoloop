@@ -99,11 +99,11 @@ steps:
       git('checkout', defaultBranch);
 
       if (failed.length > 0) {
-          console.log('\n\u26a0\ufe0f Failed to sync ' + failed.length + ' branch(es): ' + JSON.stringify(failed));
+          console.log('\n\u26a0\ufe0f Failed to sync ' + failed.length + " branch(es): " + JSON.stringify(failed)); // \u26a0\ufe0f = warning sign
           console.log('These branches may need manual conflict resolution.');
           // Don't fail the workflow -- log the issue but continue
       } else {
-          console.log('\n\u2705 All ' + branches.length + ' branch(es) synced successfully.');
+          console.log('\n\u2705 All ' + branches.length + " branch(es) synced successfully."); // \u2705 = checkmark
       }
       JSEOF
 ---
