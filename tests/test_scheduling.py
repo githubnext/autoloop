@@ -20,6 +20,7 @@ from conftest import _funcs
 parse_schedule = _funcs["parse_schedule"]
 parse_machine_state = _funcs["parse_machine_state"]
 get_program_name = _funcs["get_program_name"]
+parse_link_header = _funcs["parse_link_header"]
 
 
 # ---------------------------------------------------------------------------
@@ -664,6 +665,35 @@ class TestSelectProgram:
 
 
 # ---------------------------------------------------------------------------
+# parseLinkHeader — extract next-page URL from GitHub API Link header
+# ---------------------------------------------------------------------------
+
+class TestParseLinkHeader:
+    def test_returns_null_for_none(self):
+        assert parse_link_header(None) is None
+
+    def test_returns_null_for_empty_string(self):
+        assert parse_link_header("") is None
+
+    def test_extracts_next_url(self):
+        header = '<https://api.github.com/repos/o/r/issues?page=2&per_page=100>; rel="next", <https://api.github.com/repos/o/r/issues?page=5&per_page=100>; rel="last"'
+        assert parse_link_header(header) == "https://api.github.com/repos/o/r/issues?page=2&per_page=100"
+
+    def test_returns_null_when_no_next(self):
+        header = '<https://api.github.com/repos/o/r/issues?page=1&per_page=100>; rel="prev", <https://api.github.com/repos/o/r/issues?page=5&per_page=100>; rel="last"'
+        assert parse_link_header(header) is None
+
+    def test_next_not_first(self):
+        """next rel is not the first segment."""
+        header = '<https://api.github.com/repos/o/r/issues?page=1&per_page=100>; rel="prev", <https://api.github.com/repos/o/r/issues?page=3&per_page=100>; rel="next", <https://api.github.com/repos/o/r/issues?page=5&per_page=100>; rel="last"'
+        assert parse_link_header(header) == "https://api.github.com/repos/o/r/issues?page=3&per_page=100"
+
+    def test_single_next_segment(self):
+        header = '<https://api.github.com/repos/o/r/issues?page=2&per_page=100>; rel="next"'
+        assert parse_link_header(header) == "https://api.github.com/repos/o/r/issues?page=2&per_page=100"
+
+
+# ---------------------------------------------------------------------------
 # Extraction sanity check — verify conftest.py found the expected functions
 # ---------------------------------------------------------------------------
 
@@ -676,6 +706,9 @@ class TestExtraction:
 
     def test_get_program_name_extracted(self):
         assert callable(get_program_name)
+
+    def test_parse_link_header_extracted(self):
+        assert callable(parse_link_header)
 
     def test_read_program_state_extracted(self):
         # read_program_state exists in the workflow but depends on file I/O

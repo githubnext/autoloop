@@ -181,6 +181,19 @@ steps:
           }
       }
 
+      // Parse the GitHub API Link header to extract the "next" page URL.
+      // Returns the URL string for the next page, or null if there is none.
+      function parseLinkHeader(header) {
+          if (!header) return null;
+          var parts = header.split(',');
+          for (var i = 0; i < parts.length; i++) {
+              var section = parts[i].trim();
+              var m = section.match(/^<([^>]+)>;\s*rel="next"$/);
+              if (m) return m[1];
+          }
+          return null;
+      }
+
       // Main execution
       async function main() {
           // Bootstrap: create autoloop programs directory and template if missing
@@ -273,18 +286,23 @@ steps:
               } catch (e) { /* stat failed */ }
           }
 
-          // Scan GitHub issues with the 'autoloop-program' label
+          // Scan GitHub issues with the 'autoloop-program' label (paginated)
           const issueProgramsDir = '/tmp/gh-aw/issue-programs';
           fs.mkdirSync(issueProgramsDir, { recursive: true });
           try {
-              const apiUrl = 'https://api.github.com/repos/' + repo + '/issues?labels=autoloop-program&state=open&per_page=100';
-              const response = await fetch(apiUrl, {
-                  headers: {
-                      'Authorization': 'token ' + githubToken,
-                      'Accept': 'application/vnd.github.v3+json',
-                  },
-              });
-              const issues = await response.json();
+              let nextUrl = 'https://api.github.com/repos/' + repo + '/issues?labels=autoloop-program&state=open&per_page=100';
+              const issues = [];
+              while (nextUrl) {
+                  const response = await fetch(nextUrl, {
+                      headers: {
+                          'Authorization': 'token ' + githubToken,
+                          'Accept': 'application/vnd.github.v3+json',
+                      },
+                  });
+                  const page = await response.json();
+                  issues.push(...page);
+                  nextUrl = parseLinkHeader(response.headers.get('link'));
+              }
               for (const issue of issues) {
                   if (issue.pull_request) continue; // skip PRs
                   const body = issue.body || '';

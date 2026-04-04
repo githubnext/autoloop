@@ -47,7 +47,7 @@ def _load_workflow_functions():
         f.write(func_source)
         f.write(
             "\n\nmodule.exports = "
-            "{ parseMachineState, parseSchedule, getProgramName, readProgramState };\n"
+            "{ parseMachineState, parseSchedule, getProgramName, readProgramState, parseLinkHeader };\n"
         )
 
     return True
@@ -102,6 +102,7 @@ _funcs = {
     "parse_machine_state": _parse_machine_state_wrapper,
     "get_program_name": _get_program_name_wrapper,
     "read_program_state": lambda name: _call_js("readProgramState", name),
+    "parse_link_header": lambda header: _call_js("parseLinkHeader", header),
 }
 
 
