@@ -9,7 +9,8 @@ on:
     branches: [main]  # ← update this if your default branch is not 'main'
   workflow_dispatch:
 
-permissions: read-all
+permissions:
+  contents: write
 
 timeout-minutes: 10
 
