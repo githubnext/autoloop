@@ -719,11 +719,11 @@ Examples:
 ### How It Works
 
 1. On the **first accepted iteration**, the branch is created from the default branch.
-2. On **subsequent iterations**, the agent checks out the existing branch and ensures it is up to date with the default branch (by merging the default branch into it).
+2. On **subsequent iterations**, the agent checks out the existing branch and ensures it is up to date with the default branch. If the branch's changes have already been merged into the default branch (i.e., `git diff origin/main..autoloop/{program-name}` is empty), the branch is **reset to `origin/main`** to avoid stale commits. Otherwise, the default branch is merged into it.
 3. **Accepted iterations** are committed and pushed to the branch. Each commit message references the GitHub Actions run URL.
 4. **Rejected or errored iterations** do not commit — changes are discarded.
 5. A **single draft PR** is created for the branch on the first accepted iteration. Future accepted iterations push additional commits to the same PR.
-6. The branch may be **merged into the default branch** at any time (by a maintainer or CI). After merging, the branch continues to be used for future iterations — it is never deleted while the program is active.
+6. The branch may be **merged into the default branch** at any time (by a maintainer or CI). After merging, the branch continues to be used for future iterations — it is never deleted while the program is active. On the next iteration, the branch is automatically reset to the default branch (see step 2) so that already-merged commits do not cause patch conflicts.
 7. A **sync workflow** automatically merges the default branch into all active `autoloop/*` branches whenever the default branch changes, keeping them up to date.
 
 ### Cross-Linking
@@ -766,7 +766,10 @@ Each run executes **one iteration for the single selected program**:
 
 ### Step 3: Implement
 
-1. Check out the program's long-running branch `autoloop/{program-name}`. If the branch does not yet exist, create it from the default branch. If it does exist, ensure it is up to date with the default branch (merge the default branch into it).
+1. Check out the program's long-running branch `autoloop/{program-name}`. If the branch does not yet exist, create it from the default branch. If it does exist:
+   - Fetch the default branch: `git fetch origin main`.
+   - Check whether the branch's changes have already been merged into main. If `git diff origin/main..autoloop/{program-name}` produces no output (i.e., every change on the branch is already on main), the branch is stale — **reset it to `origin/main`**: `git reset --hard origin/main`.
+   - Otherwise, merge the default branch into the long-running branch to pick up any upstream changes.
 2. Make the proposed changes to the target files only.
 3. **Respect the program constraints**: do not modify files outside the target list.
 
