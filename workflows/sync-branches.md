@@ -34,8 +34,10 @@ steps:
           return { returncode: result.status, stdout: result.stdout || '', stderr: result.stderr || '' };
       }
 
-      // List all remote branches matching the autoloop/* pattern
-      const listResult = git('branch', '-r', '--list', 'origin/autoloop/*');
+      // Discover all remote branches matching the autoloop/* pattern.
+      // Use ls-remote instead of 'git branch -r' so we don't depend on
+      // pre-fetched remote-tracking refs (shallow checkouts won't have them).
+      const listResult = git('ls-remote', '--heads', 'origin', 'autoloop/*');
       if (listResult.returncode !== 0) {
           console.log('Failed to list remote branches: ' + listResult.stderr);
           process.exit(0);
@@ -44,7 +46,7 @@ steps:
       const branches = listResult.stdout.trim().split('\n')
           .map(b => b.trim())
           .filter(b => b)
-          .map(b => b.replace('origin/', ''));
+          .map(b => b.replace(/^.*refs\/heads\//, ''));
 
       if (branches.length === 0) {
           console.log('No autoloop/* branches found. Nothing to sync.');
