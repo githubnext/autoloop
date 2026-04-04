@@ -15,11 +15,24 @@ Set up Autoloop in this repository by:
 
 ## Step 1: Install gh-aw CLI Extension
 
-Run the installation script from the gh-aw repository:
+Install the gh-aw extension directly via the GitHub CLI:
 
 ```bash
-curl -sL https://raw.githubusercontent.com/github/gh-aw/main/install-gh-aw.sh | bash
+gh extension install github/gh-aw
 ```
+
+<details>
+<summary>Alternative: install via shell script</summary>
+
+If `gh extension install` is unavailable, download and run the installation script manually:
+
+```bash
+curl -fL https://raw.githubusercontent.com/github/gh-aw/main/install-gh-aw.sh -o /tmp/install-gh-aw.sh
+bash /tmp/install-gh-aw.sh
+rm -f /tmp/install-gh-aw.sh
+```
+
+</details>
 
 **Verify installation**:
 
@@ -30,7 +43,7 @@ gh aw version
 You should see version information displayed. If you encounter an error, check that:
 
 - GitHub CLI (`gh`) is installed and authenticated
-- The installation script completed without errors
+- The installation completed without errors
 
 ## Step 2: Initialize Repository for Agentic Workflows
 
@@ -123,7 +136,7 @@ Optionally, you may copy existing examples from the [`.autoloop/programs/`](.aut
 ### gh aw not found
 
 - Verify GitHub CLI is installed: `gh --version`
-- Re-run the installation script from Step 1
+- Re-run the installation command from Step 1
 - Check that `gh auth status` shows a valid session
 
 ### Compile fails
