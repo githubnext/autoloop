@@ -31,7 +31,8 @@ steps:
       function git(...args) {
           const result = spawnSync('git', args, { encoding: 'utf-8' });
           if (result.status !== 0) {
-              console.log('git ' + args.join(' ') + ' failed: ' + result.stderr);
+              console.error('git ' + args.join(' ') + ' failed: ' + result.stderr);
+              process.exit(1);
           }
           return result;
       }
