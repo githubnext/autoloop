@@ -680,3 +680,49 @@ class TestExtraction:
     def test_read_program_state_extracted(self):
         # read_program_state exists in the workflow but depends on file I/O
         assert "read_program_state" in _funcs
+
+
+# ---------------------------------------------------------------------------
+# Workflow step ordering — repo-memory must be available before scheduling
+# ---------------------------------------------------------------------------
+
+class TestWorkflowStepOrdering:
+    """Verify that the repo-memory clone step appears before the scheduling step.
+
+    The scheduling pre-step reads persisted state from repo-memory.  If the
+    clone happens after scheduling, the script cannot see previous-run state,
+    causing incorrect selection/skip behaviour.
+    """
+
+    CLONE_STEP = "Clone repo-memory for scheduling"
+    SCHED_STEP = "Check which programs are due"
+
+    def _load_steps(self):
+        """Return the list of pre-step names from workflows/autoloop.md."""
+        import os
+        import re
+
+        wf_path = os.path.join(os.path.dirname(__file__), "..", "workflows", "autoloop.md")
+        with open(wf_path) as f:
+            content = f.read()
+        step_names = []
+        for m in re.finditer(r'^\s*-\s*name:\s*(.+)$', content, re.MULTILINE):
+            step_names.append(m.group(1).strip())
+        return step_names
+
+    def test_clone_step_exists(self):
+        """A step that clones repo-memory for scheduling must exist."""
+        steps = self._load_steps()
+        assert self.CLONE_STEP in steps, (
+            f"Expected step '{self.CLONE_STEP}' not found. Steps: {steps}"
+        )
+
+    def test_clone_before_scheduling(self):
+        """The repo-memory clone step must come before 'Check which programs are due'."""
+        steps = self._load_steps()
+        clone_idx = steps.index(self.CLONE_STEP)
+        sched_idx = steps.index(self.SCHED_STEP)
+        assert clone_idx < sched_idx, (
+            f"'{self.CLONE_STEP}' (index {clone_idx}) must come before "
+            f"'{self.SCHED_STEP}' (index {sched_idx}). Steps: {steps}"
+        )

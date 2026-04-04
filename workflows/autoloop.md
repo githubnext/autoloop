@@ -81,6 +81,28 @@ imports:
   - shared/reporting.md
 
 steps:
+  - name: Clone repo-memory for scheduling
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      GITHUB_SERVER_URL: ${{ github.server_url }}
+    run: |
+      # Clone the repo-memory branch so the scheduling step can read persisted state
+      # from previous runs.  The framework-managed repo-memory clone happens after
+      # pre-steps, so we perform an early shallow clone here.
+      MEMORY_DIR="/tmp/gh-aw/repo-memory/autoloop"
+      BRANCH="memory/autoloop"
+      mkdir -p "$(dirname "$MEMORY_DIR")"
+      REPO_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+      AUTH_URL="$(echo "$REPO_URL" | sed "s|https://|https://x-access-token:${GH_TOKEN}@|")"
+      if git ls-remote --exit-code --heads "$AUTH_URL" "$BRANCH" > /dev/null 2>&1; then
+        git clone --single-branch --branch "$BRANCH" --depth 1 "$AUTH_URL" "$MEMORY_DIR" 2>&1
+        echo "Cloned repo-memory branch to $MEMORY_DIR"
+      else
+        mkdir -p "$MEMORY_DIR"
+        echo "No repo-memory branch found yet (first run). Created empty directory."
+      fi
+
   - name: Check which programs are due
     env:
       GITHUB_TOKEN: ${{ github.token }}
