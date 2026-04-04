@@ -23,8 +23,12 @@ steps:
   - name: Merge default branch into all autoloop program branches
     env:
       GITHUB_REPOSITORY: ${{ github.repository }}
+      GITHUB_TOKEN: ${{ github.token }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
     run: |
+      git config user.name "github-actions[bot]"
+      git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
       node - << 'JSEOF'
       const { execSync, spawnSync } = require('child_process');
 
