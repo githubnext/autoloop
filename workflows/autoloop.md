@@ -541,6 +541,7 @@ steps:
               issueProgramsMap[name] = info.issue_number;
           }
 
+          const notDue = !selected && unconfigured.length === 0;
           const result = {
               selected: selected,
               selected_file: selectedFile,
@@ -551,6 +552,7 @@ steps:
               skipped: skipped,
               unconfigured: unconfigured,
               no_programs: false,
+              not_due: notDue,
           };
 
           fs.mkdirSync('/tmp/gh-aw', { recursive: true });
@@ -564,7 +566,7 @@ steps:
 
           if (!selected && unconfigured.length === 0) {
               console.log('\nNo programs due this run. Exiting early.');
-              process.exit(1); // Non-zero exit skips the agent step
+              process.exit(0);
           }
       }
 
@@ -653,6 +655,7 @@ The pre-step has already determined which program to run. Read `/tmp/gh-aw/autol
 - **`unconfigured`**: Programs that still have the sentinel or placeholder content.
 - **`skipped`**: Programs not due yet based on their per-program schedule.
 - **`no_programs`**: If `true`, no program files exist at all.
+- **`not_due`**: If `true`, programs exist but none are due for this run.
 
 If `selected` is not null:
 1. Read the program file from the `selected_file` path.
