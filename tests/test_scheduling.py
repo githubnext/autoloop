@@ -694,17 +694,17 @@ class TestWorkflowStepOrdering:
     causing incorrect selection/skip behaviour.
     """
 
+    CLONE_STEP = "Clone repo-memory for scheduling"
+    SCHED_STEP = "Check which programs are due"
+
     def _load_steps(self):
         """Return the list of pre-step names from workflows/autoloop.md."""
-        import os, re, yaml
+        import os
+        import re
+
         wf_path = os.path.join(os.path.dirname(__file__), "..", "workflows", "autoloop.md")
         with open(wf_path) as f:
             content = f.read()
-        # The YAML frontmatter (before `---` + markdown body) contains the steps.
-        # Extract the frontmatter block (first --- ... --- block including 'steps:').
-        # The source file has the structure: ---\n<yaml>\n---\nsteps:\n  - ...\n\nsource: ...
-        # We need everything from start to the line "source: ..." or "engine: ..."
-        # Actually, the whole pre-body section is YAML-ish; let's just find step names.
         step_names = []
         for m in re.finditer(r'^\s*-\s*name:\s*(.+)$', content, re.MULTILINE):
             step_names.append(m.group(1).strip())
@@ -713,28 +713,16 @@ class TestWorkflowStepOrdering:
     def test_clone_step_exists(self):
         """A step that clones repo-memory for scheduling must exist."""
         steps = self._load_steps()
-        clone_steps = [s for s in steps if "repo-memory" in s.lower() and "schedul" in s.lower()]
-        assert len(clone_steps) >= 1, (
-            "Expected a repo-memory clone step for scheduling, found none. "
-            f"Steps: {steps}"
+        assert self.CLONE_STEP in steps, (
+            f"Expected step '{self.CLONE_STEP}' not found. Steps: {steps}"
         )
 
     def test_clone_before_scheduling(self):
         """The repo-memory clone step must come before 'Check which programs are due'."""
         steps = self._load_steps()
-        clone_idx = None
-        sched_idx = None
-        for i, name in enumerate(steps):
-            if "repo-memory" in name.lower() and "schedul" in name.lower():
-                clone_idx = i
-                break
-        for i, name in enumerate(steps):
-            if name == "Check which programs are due":
-                sched_idx = i
-                break
-        assert clone_idx is not None, f"Clone step not found. Steps: {steps}"
-        assert sched_idx is not None, f"Scheduling step not found. Steps: {steps}"
+        clone_idx = steps.index(self.CLONE_STEP)
+        sched_idx = steps.index(self.SCHED_STEP)
         assert clone_idx < sched_idx, (
-            f"Clone step (index {clone_idx}) must come before scheduling step "
-            f"(index {sched_idx}). Steps: {steps}"
+            f"'{self.CLONE_STEP}' (index {clone_idx}) must come before "
+            f"'{self.SCHED_STEP}' (index {sched_idx}). Steps: {steps}"
         )
