@@ -759,3 +759,77 @@ class TestWorkflowStepOrdering:
             f"'{self.CLONE_STEP}' (index {clone_idx}) must come before "
             f"'{self.SCHED_STEP}' (index {sched_idx}). Steps: {steps}"
         )
+
+
+class TestSyncBranchesCredentialOrdering:
+    """Verify that Git credentials are configured before the merge/push step.
+
+    The sync-branches workflow merges the default branch into autoloop/*
+    branches.  Merge commits require a Git identity (user.name/user.email)
+    and pushes/fetches need an authenticated remote URL.  Both must be
+    configured before the merge step runs.
+    """
+
+    CRED_STEP = "Set up Git identity and authentication"
+    MERGE_STEP = "Merge default branch into all autoloop program branches"
+
+    def _load_steps(self):
+        """Return the list of pre-step names from workflows/sync-branches.md."""
+        import os
+
+        wf_path = os.path.join(os.path.dirname(__file__), "..", "workflows", "sync-branches.md")
+        with open(wf_path) as f:
+            content = f.read()
+        step_names = []
+        for m in re.finditer(r'^\s*-\s*name:\s*(.+)$', content, re.MULTILINE):
+            step_names.append(m.group(1).strip())
+        return step_names
+
+    def _load_lock_steps(self):
+        """Return the list of step names from .github/workflows/sync-branches.lock.yml."""
+        import os
+        import yaml
+
+        lock_path = os.path.join(
+            os.path.dirname(__file__), "..", ".github", "workflows", "sync-branches.lock.yml"
+        )
+        with open(lock_path) as f:
+            data = yaml.safe_load(f)
+        # Collect step names from the 'agent' job
+        steps = data.get("jobs", {}).get("agent", {}).get("steps", [])
+        return [s.get("name", "") for s in steps if s.get("name")]
+
+    def test_cred_step_exists(self):
+        """A step that configures Git identity/auth must exist in the source."""
+        steps = self._load_steps()
+        assert self.CRED_STEP in steps, (
+            f"Expected step '{self.CRED_STEP}' not found. Steps: {steps}"
+        )
+
+    def test_creds_before_merge(self):
+        """The credential step must come before the merge step in the source."""
+        steps = self._load_steps()
+        cred_idx = steps.index(self.CRED_STEP)
+        merge_idx = steps.index(self.MERGE_STEP)
+        assert cred_idx < merge_idx, (
+            f"'{self.CRED_STEP}' (index {cred_idx}) must come before "
+            f"'{self.MERGE_STEP}' (index {merge_idx}). Steps: {steps}"
+        )
+
+    def test_lock_creds_before_merge(self):
+        """In the compiled lock file, Configure Git credentials must come before the merge step."""
+        steps = self._load_lock_steps()
+        cred_names = [s for s in steps if "Configure Git credentials" in s]
+        assert cred_names, (
+            f"No 'Configure Git credentials' step found in lock file. Steps: {steps}"
+        )
+        merge_names = [s for s in steps if "Merge default branch" in s]
+        assert merge_names, (
+            f"No merge step found in lock file. Steps: {steps}"
+        )
+        cred_idx = steps.index(cred_names[0])
+        merge_idx = steps.index(merge_names[0])
+        assert cred_idx < merge_idx, (
+            f"'Configure Git credentials' (index {cred_idx}) must come before "
+            f"merge step (index {merge_idx}). Steps: {steps}"
+        )

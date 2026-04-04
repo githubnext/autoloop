@@ -20,6 +20,34 @@ tools:
   bash: true
 
 steps:
+  - name: Set up Git identity and authentication
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      GITHUB_SERVER_URL: ${{ github.server_url }}
+    run: |
+      node - << 'JSEOF'
+      const { spawnSync } = require('child_process');
+      function git(...args) {
+          const result = spawnSync('git', args, { encoding: 'utf-8' });
+          if (result.status !== 0) {
+              console.error('git ' + args.join(' ') + ' failed: ' + result.stderr);
+              process.exit(1);
+          }
+          return result;
+      }
+      git('config', '--global', 'user.email', 'github-actions[bot]@users.noreply.github.com');
+      git('config', '--global', 'user.name', 'github-actions[bot]');
+      const ghToken = process.env.GH_TOKEN || '';
+      const serverUrl = process.env.GITHUB_SERVER_URL || 'https://github.com';
+      const repo = process.env.GITHUB_REPOSITORY || '';
+      if (ghToken && repo) {
+          const authUrl = serverUrl.replace('https://', 'https://x-access-token:' + ghToken + '@') + '/' + repo + '.git';
+          git('remote', 'set-url', 'origin', authUrl);
+      }
+      console.log('Git identity and authentication configured.');
+      JSEOF
+
   - name: Merge default branch into all autoloop program branches
     env:
       GITHUB_REPOSITORY: ${{ github.repository }}
