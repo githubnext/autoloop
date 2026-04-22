@@ -76,6 +76,11 @@ tools:
   repo-memory:
     branch-name: memory/autoloop
     file-glob: ["*.md"]
+    # 30 KB per state file -- enough for the structured sections plus ~10 most-recent
+    # iteration entries plus ~5 compressed-range summaries. The rolling-compaction
+    # rule in "Update Rules" below keeps files under this budget. Tune up for
+    # short-cadence programs (e.g. `every 5m`); tune down for daily-cadence ones.
+    max-file-size: 30720
 
 imports:
   - shared/reporting.md
@@ -177,6 +182,19 @@ steps:
           }
           const content = fs.readFileSync(stateFile, 'utf-8');
           return parseMachineState(content);
+      }
+
+      function getStateFileSize(programName) {
+          // Returns the size of the program's state file in bytes, or 0 if it
+          // does not exist. Surfaced in autoloop.json so the agent can decide
+          // whether to compact aggressively this iteration.
+          const stateFile = path.join(repoMemoryDir, programName + '.md');
+          try {
+              const st = fs.statSync(stateFile);
+              return st.isFile() ? st.size : 0;
+          } catch (e) {
+              return 0;
+          }
       }
 
       // Schedule string to milliseconds
@@ -547,6 +565,8 @@ steps:
               selected_file: selectedFile,
               selected_issue: selectedIssue,
               selected_target_metric: selectedTargetMetric,
+              state_file_size_bytes: selected ? getStateFileSize(selected) : 0,
+              state_file_max_bytes: 30720,
               issue_programs: issueProgramsMap,
               deferred: deferred,
               skipped: skipped,
@@ -650,6 +670,8 @@ The pre-step has already determined which program to run. Read `/tmp/gh-aw/autol
 - **`selected_file`**: The full path to the program's markdown file (either `.autoloop/programs/<name>/program.md`, `.autoloop/programs/<name>.md`, or `/tmp/gh-aw/issue-programs/<name>.md` for issue-based programs).
 - **`selected_issue`**: The GitHub issue number if the selected program came from an issue, or `null` if it came from a file.
 - **`selected_target_metric`**: The `target-metric` value from the program's frontmatter (a number), or `null` if the program is open-ended. Used to check the [halting condition](#halting-condition) after each accepted iteration.
+- **`state_file_size_bytes`**: Current size of the selected program's state file in bytes (0 if it does not exist yet). Use this together with `state_file_max_bytes` to decide whether to compact aggressively this iteration (see [Update Rules](#update-rules) — when size exceeds 80% of the max, collapse older iteration entries).
+- **`state_file_max_bytes`**: The configured `max-file-size` for repo-memory state files (default `30720`, i.e. 30 KB). Files larger than this are rejected by repo-memory, breaking scheduling.
 - **`issue_programs`**: A mapping of program name → issue number for all discovered issue-based programs.
 - **`deferred`**: Other programs that were due but will be handled in future runs.
 - **`unconfigured`**: Programs that still have the sentinel or placeholder content.
@@ -1163,6 +1185,13 @@ After each iteration, prepend an entry to the **📊 Iteration History** section
 - **Add to Foreclosed Avenues** only when an approach is conclusively ruled out (not just rejected once).
 - **Respect Current Priorities** — if a maintainer has written priorities, follow them in your next proposal.
 - **Write the state file** to the repo-memory folder. Changes are automatically committed and pushed to the `memory/autoloop` branch after the workflow completes.
+- **Keep the state file compact.** The state file must stay under the configured `max-file-size` (default 30 KB — see `state_file_max_bytes` in `/tmp/gh-aw/autoloop.json`). When prepending a new iteration entry, collapse older iteration entries (beyond the most recent 10) into compressed summary lines. Example format for collapsed entries:
+
+    ```markdown
+    ### Iters 50–100 — ✅ (metrics 20→55): brief summary of what worked across this range
+    ```
+
+    Also prune **📚 Lessons Learned** to the most recent and most relevant entries, and consolidate similar entries in **🚧 Foreclosed Avenues** if it grows beyond a page. If `state_file_size_bytes` from `/tmp/gh-aw/autoloop.json` is already greater than 80% of `state_file_max_bytes`, **compact aggressively** this iteration: collapse to the most recent 5 detailed entries and merge older compressed ranges into broader bands. Repo-memory rejects files larger than `max-file-size`, which breaks scheduling — so keeping the file under budget is mandatory, not optional.
 
 ## Guidelines
 
