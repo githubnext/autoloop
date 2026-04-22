@@ -44,11 +44,12 @@ safe-outputs:
     title-prefix: "[Autoloop] "
     labels: [automation, autoloop]
     protected-files: fallback-to-issue
-    max: 2
+    preserve-branch-name: true
+    max: 1
   push-to-pull-request-branch:
     target: "*"
     title-prefix: "[Autoloop] "
-    max: 2
+    max: 1
   create-issue:
     title-prefix: "[Autoloop] "
     labels: [automation, autoloop]
@@ -216,6 +217,65 @@ steps:
           return null;
       }
 
+      // Look up the open draft PR (if any) for a program's long-running branch.
+      // Returns the PR number, or null if none is found.
+      //
+      // The single-PR-per-program invariant requires that we never open a second
+      // draft PR for the same program. The agent uses the returned `existing_pr`
+      // to decide between `create-pull-request` (only if null) and
+      // `push-to-pull-request-branch` (always preferred when an open PR exists).
+      //
+      // We also tolerate legacy framework-suffixed branch names of the form
+      // `autoloop/{program}-<6-40 hex chars>` so installations upgrading from
+      // before `preserve-branch-name: true` was set find their in-flight PR
+      // rather than opening a second one.
+      async function findExistingPRForBranch(repo, programName, githubToken) {
+          if (!repo || !programName || !githubToken) return null;
+          const owner = repo.split('/')[0];
+          const canonicalBranch = 'autoloop/' + programName;
+          const headers = {
+              'Authorization': 'token ' + githubToken,
+              'Accept': 'application/vnd.github.v3+json',
+          };
+          // Strategy 1: exact canonical branch name
+          try {
+              const url = 'https://api.github.com/repos/' + repo +
+                  '/pulls?head=' + encodeURIComponent(owner + ':' + canonicalBranch) +
+                  '&state=open';
+              const resp = await fetch(url, { headers: headers });
+              if (resp.ok) {
+                  const prs = await resp.json();
+                  if (Array.isArray(prs) && prs.length > 0 && prs[0].number) {
+                      return prs[0].number;
+                  }
+              }
+          } catch (e) { /* ignore and fall through to fallback */ }
+          // Strategy 2 fallback: list open PRs and match suffixed branch or title prefix
+          try {
+              const suffixRegex = new RegExp(
+                  '^autoloop/' + programName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') +
+                  '(-[0-9a-f]{6,40})?$'
+              );
+              const titlePrefix = '[Autoloop: ' + programName + ']';
+              let nextUrl = 'https://api.github.com/repos/' + repo + '/pulls?state=open&per_page=100';
+              while (nextUrl) {
+                  const resp = await fetch(nextUrl, { headers: headers });
+                  if (!resp.ok) break;
+                  const page = await resp.json();
+                  if (!Array.isArray(page)) break;
+                  for (const pr of page) {
+                      const head = pr && pr.head && pr.head.ref ? pr.head.ref : '';
+                      if (suffixRegex.test(head)) return pr.number;
+                      if (typeof pr.title === 'string' && pr.title.startsWith(titlePrefix)) {
+                          return pr.number;
+                      }
+                  }
+                  nextUrl = parseLinkHeader(resp.headers.get('link'));
+              }
+          } catch (e) { /* give up — agent will fall back to state file PR field */ }
+          return null;
+      }
+
       // Main execution
       async function main() {
           // Bootstrap: create autoloop programs directory and template if missing
@@ -366,7 +426,7 @@ steps:
               console.log('NO_PROGRAMS_FOUND');
               fs.mkdirSync('/tmp/gh-aw', { recursive: true });
               fs.writeFileSync('/tmp/gh-aw/autoloop.json', JSON.stringify(
-                  { due: [], skipped: [], unconfigured: [], no_programs: true }
+                  { due: [], skipped: [], unconfigured: [], no_programs: true, head_branch: null, existing_pr: null }
               ));
               process.exit(0);
           }
@@ -541,6 +601,22 @@ steps:
               issueProgramsMap[name] = info.issue_number;
           }
 
+          // Look up the existing draft PR (if any) for the selected program, so
+          // the agent can enforce the single-PR-per-program invariant: never
+          // call create-pull-request when a PR for autoloop/{name} already exists.
+          // head_branch is always the canonical name (no suffix, no hash).
+          let existingPr = null;
+          let headBranch = null;
+          if (selected) {
+              headBranch = 'autoloop/' + selected;
+              try {
+                  existingPr = await findExistingPRForBranch(repo, selected, githubToken);
+              } catch (e) {
+                  console.log('  Warning: existing PR lookup failed for ' + selected + ': ' + (e.message || e));
+                  existingPr = null;
+              }
+          }
+
           const notDue = !selected && unconfigured.length === 0;
           const result = {
               selected: selected,
@@ -553,6 +629,8 @@ steps:
               unconfigured: unconfigured,
               no_programs: false,
               not_due: notDue,
+              head_branch: headBranch,
+              existing_pr: existingPr,
           };
 
           fs.mkdirSync('/tmp/gh-aw', { recursive: true });
@@ -656,6 +734,8 @@ The pre-step has already determined which program to run. Read `/tmp/gh-aw/autol
 - **`skipped`**: Programs not due yet based on their per-program schedule.
 - **`no_programs`**: If `true`, no program files exist at all.
 - **`not_due`**: If `true`, programs exist but none are due for this run.
+- **`head_branch`**: The canonical long-running branch name for the selected program — always exactly `autoloop/{program-name}`, never with a suffix or hash. Use this value verbatim when creating, checking out, or pushing to the branch.
+- **`existing_pr`**: The number of the open draft PR for `autoloop/{program-name}`, or `null` if no PR exists yet. Use this to enforce the single-PR-per-program invariant — see [Step 5: Accept or Reject](#step-5-accept-or-reject).
 
 If `selected` is not null:
 1. Read the program file from the `selected_file` path.
@@ -759,6 +839,16 @@ Examples:
 - `autoloop/signal_processing`
 - `autoloop/coverage`
 
+> ⚠️ **CRITICAL — Branch Name Must Be Exact**
+>
+> The branch name is ALWAYS exactly `autoloop/{program-name}` — **no suffixes, no hashes, no run IDs, no iteration numbers, no random tokens**. Never create branches like:
+> - ❌ `autoloop/coverage-abc123`
+> - ❌ `autoloop/coverage-iter42-deadbeef`
+> - ❌ `autoloop/coverage-1234567890`
+>
+> **Never let the gh-aw framework auto-generate a branch name.** You must explicitly name the branch when creating it. The pre-step provides the canonical name in the `head_branch` field of `/tmp/gh-aw/autoloop.json` — always use that value verbatim.
+
+
 ### How It Works
 
 1. On the **first accepted iteration**, the branch is created from the default branch.
@@ -829,10 +919,13 @@ Each run executes **one iteration for the single selected program**:
    - Commit message subject line: `[Autoloop: {program-name}] Iteration <N>: <short description>`
    - Commit message body (after a blank line): `Run: {run_url}` referencing the GitHub Actions run URL.
 2. Push the commit to the long-running branch.
-3. If a draft PR does not already exist for this branch, create one:
+3. **Find the existing PR or create one** — follow these steps in order:
+   a. Check `existing_pr` from `/tmp/gh-aw/autoloop.json`. If it is not null, that is the existing draft PR — use `push-to-pull-request-branch`, **never** `create-pull-request`.
+   b. If `existing_pr` is null, also check the `PR` field in the state file's **⚙️ Machine State** table as a fallback. Verify it is still open via the GitHub API; if it has been closed or merged, treat it as if no PR exists and proceed to step (c).
+   c. If no PR exists (both sources are null): create one with `create-pull-request`, specifying `branch: autoloop/{program-name}` (the value of `head_branch` from `autoloop.json`) explicitly — do not let the framework auto-generate a branch name.
    - Title: `[Autoloop: {program-name}]`
    - Body includes: a summary of the program goal, link to the steering issue, the current best metric, and AI disclosure: `🤖 *This PR is maintained by Autoloop. Each accepted iteration adds a commit to this branch.*`
-   If a draft PR already exists, update the PR body with the latest metric and a summary of the most recent accepted iteration. Add a comment to the PR summarizing the iteration: what changed, old metric, new metric, improvement delta, and a link to the actions run.
+   When pushing to an existing PR, also update the PR body with the latest metric and a summary of the most recent accepted iteration. Add a comment to the PR summarizing the iteration: what changed, old metric, new metric, improvement delta, and a link to the actions run.
 4. Ensure the steering issue exists (see [Steering Issue](#steering-issue) below). Add a comment to the steering issue linking to the commit and actions run.
 5. Update the state file `{program-name}.md` in the repo-memory folder:
    - Update the **⚙️ Machine State** table: reset `consecutive_errors` to 0, set `best_metric`, increment `iteration_count`, set `last_run` to current UTC timestamp, append `"accepted"` to `recent_statuses` (keep last 10), set `paused` to false.
@@ -1177,3 +1270,17 @@ After each iteration, prepend an entry to the **📊 Iteration History** section
 - **Safety.** Never modify files outside the target list. Never modify the evaluation script. Never modify the program definition (except via `/autoloop` command mode).
 - **Read AGENTS.md first**: before starting work, read the repository's `AGENTS.md` file (if present) to understand project-specific conventions.
 - **Build and test**: run any build/test commands before creating PRs.
+
+## Common Mistakes to Avoid
+
+> ❌ **Do NOT create a new branch with a suffix for each iteration.**
+> Correct: `autoloop/coverage`
+> Wrong: `autoloop/coverage-abc123`, `autoloop/coverage-iter42`, `autoloop/coverage-deadbeef1234`
+> Use the `head_branch` field from `/tmp/gh-aw/autoloop.json` — it is always the canonical name. Never let the gh-aw framework auto-generate a branch name.
+
+> ❌ **Do NOT create a new PR if one already exists for `autoloop/{program-name}`.**
+> The pre-step provides `existing_pr` in `/tmp/gh-aw/autoloop.json`. If it is not null, **always** use `push-to-pull-request-branch` — never call `create-pull-request`. Only create a PR when `existing_pr` is null AND the state file's `PR` field is also null (or refers to a closed PR).
+
+> ❌ **Do NOT modify files outside the program's Target list.**
+> The Target section of the program file is the allowlist. Touching anything else (including the evaluation script or the program file itself) is forbidden.
+

@@ -47,7 +47,7 @@ def _load_workflow_functions():
         f.write(func_source)
         f.write(
             "\n\nmodule.exports = "
-            "{ parseMachineState, parseSchedule, getProgramName, readProgramState, parseLinkHeader };\n"
+            "{ parseMachineState, parseSchedule, getProgramName, readProgramState, parseLinkHeader, findExistingPRForBranch };\n"
         )
 
     return True
