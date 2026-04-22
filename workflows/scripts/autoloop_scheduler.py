@@ -45,8 +45,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 
 PROGRAMS_DIR = ".autoloop/programs"
-AUTOLOOP_DIR = ".autoloop/programs"
-TEMPLATE_FILE = os.path.join(AUTOLOOP_DIR, "example.md")
+TEMPLATE_FILE = os.path.join(PROGRAMS_DIR, "example.md")
 
 # Repo-memory files are cloned to /tmp/gh-aw/repo-memory/{id}/ where {id}
 # is derived from the branch-name configured in the tools section
@@ -216,9 +215,9 @@ def read_program_state(program_name, repo_memory_dir=REPO_MEMORY_DIR):
 
 def _bootstrap_template_if_missing():
     """Create ``.autoloop/programs/example.md`` if the directory is missing."""
-    if os.path.isdir(AUTOLOOP_DIR):
+    if os.path.isdir(PROGRAMS_DIR):
         return
-    os.makedirs(AUTOLOOP_DIR, exist_ok=True)
+    os.makedirs(PROGRAMS_DIR, exist_ok=True)
     bt = chr(96)  # backtick — keep gh-aw compiler happy if this ever gets inlined
     template = "\n".join([
         "<!-- AUTOLOOP:UNCONFIGURED -->",
@@ -279,8 +278,8 @@ def _scan_directory_programs():
 
 
 def _scan_bare_programs():
-    """Return paths of bare-markdown programs under ``AUTOLOOP_DIR``."""
-    return sorted(glob.glob(os.path.join(AUTOLOOP_DIR, "*.md")))
+    """Return paths of bare-markdown programs under ``PROGRAMS_DIR``."""
+    return sorted(glob.glob(os.path.join(PROGRAMS_DIR, "*.md")))
 
 
 def _fetch_issue_programs(repo, github_token):

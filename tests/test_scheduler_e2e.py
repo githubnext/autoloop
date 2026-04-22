@@ -99,9 +99,10 @@ def _run_scheduler(workdir, *, forced=None, repo="bogus.invalid/bogus"):
     os.makedirs(tmproot, exist_ok=True)
     env["TMPDIR"] = tmproot
 
-    # Wipe any stale output from a previous run within this workdir.
-    out_dir = os.path.join(tmproot, "gh-aw") if False else "/tmp/gh-aw"
-    out_path = os.path.join(out_dir, "autoloop.json")
+    # The scheduler always writes /tmp/gh-aw/autoloop.json. We can't redirect
+    # this via env vars without changing the script's contract, so tests share
+    # that path and clean up the previous run's output before invoking again.
+    out_path = "/tmp/gh-aw/autoloop.json"
     if os.path.exists(out_path):
         os.remove(out_path)
 
