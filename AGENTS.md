@@ -12,8 +12,10 @@ autoloop/
 ├── workflows/                         ← Agentic Workflow definitions
 │   ├── autoloop.md                    ← main autoloop workflow (compiled by gh-aw)
 │   ├── sync-branches.md               ← syncs default branch into autoloop/* branches
-│   └── shared/                        ← shared workflow fragments
-│       └── reporting.md
+│   ├── shared/                        ← shared workflow fragments
+│   │   └── reporting.md
+│   └── scripts/                       ← standalone scripts invoked from steps
+│       └── autoloop_scheduler.py      ← scheduler (see workflows/autoloop.md)
 ├── .autoloop/
 │   └── programs/                      ← research programs (directory-based)
 │       ├── function_minimization/
@@ -134,6 +136,7 @@ To deploy the workflow to a repository:
 1. Copy `workflows/autoloop.md` to `.github/workflows/autoloop.md` in the target repo
 2. Copy `workflows/sync-branches.md` to `.github/workflows/sync-branches.md` in the target repo
 3. Copy `workflows/shared/` to `.github/workflows/shared/` in the target repo
-4. Run `gh aw compile autoloop` and `gh aw compile sync-branches` to generate the lock files
-5. Copy program directories to `.autoloop/programs/` in the target repo
-6. Commit and push
+4. Copy `workflows/scripts/` to `.github/workflows/scripts/` in the target repo
+5. Run `gh aw compile autoloop` and `gh aw compile sync-branches` to generate the lock files
+6. Copy program directories to `.autoloop/programs/` in the target repo
+7. Commit and push
