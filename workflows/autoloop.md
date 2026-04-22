@@ -824,23 +824,75 @@ Each run executes **one iteration for the single selected program**:
 
 ### Step 5: Accept or Reject
 
-**If the metric improved** (or this is the first run establishing a baseline):
+The sandbox-computed metric is necessary but **not sufficient** for acceptance. The agent's sandbox cannot reliably install many project toolchains (e.g., `bun`, `tsc`, `cargo`, `go`, `pytest`) due to network restrictions on asset hosts, so a "metric improved" signal from the sandbox can mask broken commits (e.g., type-check or test failures the sandbox couldn't observe). Acceptance must therefore be gated on **CI green** for the pushed HEAD commit. If CI fails, attempt to fix-and-retry within the same iteration rather than reverting — reverting throws away mostly-correct work and creates `commit→revert→commit` churn on the branch.
+
+The accept path is split into three sub-steps: **5a (push and wait for CI)**, **5b (fix loop)**, **5c (accept)**.
+
+**If the metric did not improve**, jump straight to the "metric did not improve" path below — no push, no CI gate.
+
+#### Step 5a: Push and wait for CI
+
+**Only entered if the metric improved** (or this is the first run establishing a baseline).
+
 1. Commit the changes to the long-running branch `autoloop/{program-name}` with a commit message referencing the actions run:
    - Commit message subject line: `[Autoloop: {program-name}] Iteration <N>: <short description>`
    - Commit message body (after a blank line): `Run: {run_url}` referencing the GitHub Actions run URL.
 2. Push the commit to the long-running branch.
-3. If a draft PR does not already exist for this branch, create one:
+3. If a draft PR does not already exist for this branch, create it now (see Step 5c for the title/body format). The PR is needed so that CI runs and so `gh pr checks` has a target.
+4. Wait for CI on the new HEAD and reduce all check-runs to a single status — `success`, `failure`, or `pending`:
+
+   ```bash
+   PR=${EXISTING_PR:-$(gh pr list --head autoloop/{program-name} --json number -q '.[0].number')}
+   gh pr checks "$PR" --watch --interval 30 || true
+   status=$(gh pr checks "$PR" --json conclusion,state -q '.[] | (.conclusion // .state // "")' \
+     | awk '
+         BEGIN { r = "success" }
+         /^(FAILURE|CANCELLED|TIMED_OUT|ACTION_REQUIRED|STARTUP_FAILURE|STALE)$/ { r = "failure" }
+         /^(PENDING|QUEUED|IN_PROGRESS|WAITING|REQUESTED)$/ { if (r == "success") r = "pending" }
+         END { print r }')
+   ```
+
+   Three outcomes: `success`, `failure`, or `pending`. `pending` should be rare given `--watch`, but the awk fallback is defensive — never accept on `pending`. Treat `pending` as a non-terminal state: re-run the `gh pr checks --watch` step (it does not consume a fix attempt and the per-attempt `--watch` time still counts toward the 60-min wall-clock cap from Step 5b). If `pending` persists past the wall-clock cap, fall through to the `ci-timeout` handling in Step 5b.7.
+
+5. If `status == "success"`, proceed to **Step 5c**. If `status == "failure"`, proceed to **Step 5b**. If `status == "pending"`, re-run this step (subject to the wall-clock cap defined in Step 5b.7).
+
+#### Step 5b: Fix loop (up to 5 attempts per iteration)
+
+If `status == "failure"`, **fix and retry — do not revert, do not accept**:
+
+1. **Fetch the failing check-run logs** for the pushed SHA via `gh run view --log` or the Checks API.
+2. **Extract a structured failure summary**:
+   - Failing job names and the first error line for each.
+   - **A failure signature** — a stable, normalized fingerprint of the failures (e.g., sorted failing-test names + the top error code, like `TS2339:fromArrays:tests/stats/eval_query.test.ts`). The signature is what the no-progress guard compares.
+
+   *(The shared failure-signature extractor lives in the scheduler helper module — see issue #34 for the implementation.)*
+3. **No-progress guard**: if this attempt's failure signature exactly matches the previous attempt's signature, **stop**. The agent is stuck in a repeat-loop. Set `paused: true` on the state file with `pause_reason: "stuck in CI fix loop: <signature>"`, append `"ci-fix-exhausted"` to `recent_statuses`, comment on the program issue with the signature and the three most recent attempts, and end the iteration.
+4. **Attempt the fix**: feed the structured failure summary back to the agent as the next sub-task (e.g., "CI failed on `<sha>`. Here are the failures: `<…>`. Fix them and push again."). The agent commits the fix and pushes.
+5. **Loop back to Step 5a** with the new HEAD.
+6. **Budget: 5 fix attempts per iteration.** If the 5th attempt still leaves CI red, set `paused: true` with `pause_reason: "ci-fix-exhausted: <signature>"`, append `"ci-fix-exhausted"` to `recent_statuses`, comment on the program issue, and end the iteration.
+7. **Wall-clock cap: 60 min per iteration** including all CI waits across attempts. If exceeded mid-fix, set `paused: true` with `pause_reason: "ci-timeout"`, append `"ci-fix-exhausted"` to `recent_statuses`, leave the current branch state in place, and end the iteration.
+
+#### Step 5c: Accept
+
+**Only entered when `status == "success"`** from Step 5a (possibly after one or more fix attempts in Step 5b).
+
+1. The commit(s) are already on the long-running branch (pushed in Step 5a / 5b). No further pushing needed.
+2. If a draft PR does not already exist for this branch, create one:
    - Title: `[Autoloop: {program-name}]`
    - Body includes: a summary of the program goal, link to the steering issue, the current best metric, and AI disclosure: `🤖 *This PR is maintained by Autoloop. Each accepted iteration adds a commit to this branch.*`
-   If a draft PR already exists, update the PR body with the latest metric and a summary of the most recent accepted iteration. Add a comment to the PR summarizing the iteration: what changed, old metric, new metric, improvement delta, and a link to the actions run.
-4. Ensure the steering issue exists (see [Steering Issue](#steering-issue) below). Add a comment to the steering issue linking to the commit and actions run.
-5. Update the state file `{program-name}.md` in the repo-memory folder:
+   If a draft PR already exists, update the PR body with the latest metric and a summary of the most recent accepted iteration. Add a comment to the PR summarizing the iteration: what changed, old metric, new metric, improvement delta, the **fix-attempt count** if `> 0`, and a link to the actions run.
+3. Ensure the steering issue exists (see [Steering Issue](#steering-issue) below). Add a comment to the steering issue linking to the commit and actions run.
+4. Update the state file `{program-name}.md` in the repo-memory folder:
    - Update the **⚙️ Machine State** table: reset `consecutive_errors` to 0, set `best_metric`, increment `iteration_count`, set `last_run` to current UTC timestamp, append `"accepted"` to `recent_statuses` (keep last 10), set `paused` to false.
-   - Prepend an entry to **📊 Iteration History** (newest first) with status ✅, metric, PR link, and a one-line summary of what changed and why it worked.
+   - Prepend an entry to **📊 Iteration History** (newest first) with status ✅, metric, PR link, the fix-attempt count if `> 0`, and a one-line summary of what changed and why it worked.
    - Update **📚 Lessons Learned** if this iteration revealed something new about the problem or what works.
    - Update **🔭 Future Directions** if this iteration opened new promising paths.
-6. **If this is an issue-based program** (`selected_issue` is not null): update the status comment and post a per-run comment on the source issue (see [Issue-Based Program Updates](#issue-based-program-updates)).
-7. **Check halting condition** (see [Halting Condition](#halting-condition)): If the program has a `target-metric` in its frontmatter and the new `best_metric` meets or surpasses the target, mark the program as completed.
+5. **If this is an issue-based program** (`selected_issue` is not null): update the status comment and post a per-run comment on the source issue (see [Issue-Based Program Updates](#issue-based-program-updates)). Note the fix-attempt count in the per-run comment if `> 0`.
+6. **Check halting condition** (see [Halting Condition](#halting-condition)): If the program has a `target-metric` in its frontmatter and the new `best_metric` meets or surpasses the target, mark the program as completed.
+
+#### Coordination with PR-health-keeper workflows
+
+If a repo ships a companion PR-health-keeper workflow (e.g., an "Evergreen" workflow that fixes failing CI on open PRs), it should be able to pick up paused Autoloop PRs using the same rules as human-authored PRs. The handoff is via the `pause_reason` field — `ci-fix-exhausted: <signature>`, `stuck in CI fix loop: <signature>`, and `ci-timeout` are all signals that the branch is red and needs an external nudge. Absent such a workflow, the loud pause + structured reason gives a human enough signal to intervene.
 
 **If the metric did not improve**:
 1. Discard the code changes (do not commit them to the long-running branch).
@@ -1133,11 +1185,11 @@ All iterations in reverse chronological order (newest first).
 | PR | `#number` or `—` | Draft PR number for this program |
 | Steering Issue | `#number` or `—` | Steering issue number for this program |
 | Paused | `true` or `false` | Whether the program is paused |
-| Pause Reason | text or `—` | Why it is paused (if applicable) |
+| Pause Reason | text or `—` | Why it is paused (if applicable). Common values include `manual`, `consecutive errors`, `ci-fix-exhausted: <signature>` (5 fix attempts didn't fix CI), `stuck in CI fix loop: <signature>` (no-progress guard tripped — same failure signature twice in a row), and `ci-timeout` (60-min wall-clock cap hit). |
 | Completed | `true` or `false` | Whether the program has reached its target metric |
 | Completed Reason | text or `—` | Why it completed (e.g., `target metric 0.95 reached with value 0.97`) |
 | Consecutive Errors | integer | Count of consecutive evaluation failures |
-| Recent Statuses | comma-separated words | Last 10 outcomes: `accepted`, `rejected`, or `error` |
+| Recent Statuses | comma-separated words | Last 10 outcomes: `accepted`, `rejected`, `error`, or `ci-fix-exhausted`. The `ci-fix-exhausted` value is the coarse bucket for *any* iteration that ended because the CI gate could not be made green within the per-iteration budget — including no-progress-guard trips, 5-attempt budget exhaustion, and `ci-timeout`. The fine-grained reason is in `pause_reason`. |
 
 ### Iteration History Entry Format
 
@@ -1150,6 +1202,7 @@ After each iteration, prepend an entry to the **📊 Iteration History** section
 - **Change**: {one-line description of what was tried}
 - **Metric**: {value} (previous best: {previous_best}, delta: {+/-delta})
 - **Commit**: {short_sha} *(if accepted)*
+- **CI fix attempts**: {N} *(omit if 0; only present for accepted iterations that needed fix-and-retry)*
 - **Notes**: {one or two sentences on what this iteration revealed}
 ```
 
