@@ -809,10 +809,53 @@ Each run executes **one iteration for the single selected program**:
 
 ### Step 3: Implement
 
-1. Check out the program's long-running branch `autoloop/{program-name}`. If the branch does not yet exist, create it from the default branch. If it does exist:
-   - Fetch the default branch: `git fetch origin main`.
-   - Check whether the branch's changes have already been merged into main. If `git diff origin/main..autoloop/{program-name}` produces no output (i.e., every change on the branch is already on main), the branch is stale — **reset it to `origin/main`**: `git reset --hard origin/main`.
-   - Otherwise, merge the default branch into the long-running branch to pick up any upstream changes.
+1. Check out the program's long-running branch `autoloop/{program-name}`, syncing it with the default branch using an explicit four-case decision tree based on commit ahead/behind counts. Run the following script (substituting `{program-name}`):
+
+   ```bash
+   git fetch origin main
+   if git ls-remote --exit-code origin autoloop/{program-name}; then
+     # Branch exists — fetch it too so the ahead/behind counts below are
+     # computed against up-to-date local copies of the remote tips.
+     git fetch origin autoloop/{program-name}
+
+     ahead=$(git rev-list --count origin/main..origin/autoloop/{program-name})
+     behind=$(git rev-list --count origin/autoloop/{program-name}..origin/main)
+
+     if [ "$ahead" = "0" ] && [ "$behind" != "0" ]; then
+       # All of the branch's commits are already in main (typical case after a
+       # successful merge of the previous iteration's PR). A merge here would
+       # produce a noisy "Merge main into branch" commit that re-exposes every
+       # historical file as a patch touch — the failure mode that triggers
+       # gh-aw's E003 (>100 files) when a new PR is opened. Fast-forward the
+       # canonical branch to main instead. This is lossless because ahead=0
+       # proves every commit on the branch is already reachable from main.
+       git checkout -B autoloop/{program-name} origin/main
+       git push --force-with-lease origin autoloop/{program-name}
+     elif [ "$ahead" != "0" ] && [ "$behind" != "0" ]; then
+       # True divergence: branch has unique commits AND main has moved on.
+       git checkout -B autoloop/{program-name} origin/autoloop/{program-name}
+       git merge origin/main --no-edit -m "Merge main into autoloop/{program-name}"
+     else
+       # Already at main (ahead=0, behind=0) or only ahead of main (ahead>0,
+       # behind=0). Nothing to merge — just check out the branch.
+       git checkout -B autoloop/{program-name} origin/autoloop/{program-name}
+     fi
+   else
+     # Branch does not exist — create it from the default branch
+     git checkout -b autoloop/{program-name} origin/main
+   fi
+   ```
+
+   The four cases:
+
+   | ahead | behind | Action | Rationale |
+   |---|---|---|---|
+   | 0 | 0 | checkout (nothing to do) | branch is exactly at main |
+   | 0 | >0 | **fast-forward + force-push** | branch's commits already in main; merging would produce noisy merge commit |
+   | >0 | 0 | checkout (nothing to do) | unique work preserved; no upstream drift to merge |
+   | >0 | >0 | checkout + merge | true divergence |
+
+   Use `--force-with-lease` rather than `--force` so that if anyone else is simultaneously pushing to the branch, the update is rejected rather than overwriting their commits.
 2. Make the proposed changes to the target files only.
 3. **Respect the program constraints**: do not modify files outside the target list.
 
