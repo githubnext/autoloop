@@ -44,11 +44,12 @@ safe-outputs:
     title-prefix: "[Autoloop] "
     labels: [automation, autoloop]
     protected-files: fallback-to-issue
-    max: 2
+    preserve-branch-name: true
+    max: 1
   push-to-pull-request-branch:
     target: "*"
     title-prefix: "[Autoloop] "
-    max: 2
+    max: 1
   create-issue:
     title-prefix: "[Autoloop] "
     labels: [automation, autoloop]
@@ -194,6 +195,8 @@ The pre-step has already determined which program to run. Read `/tmp/gh-aw/autol
 - **`skipped`**: Programs not due yet based on their per-program schedule.
 - **`no_programs`**: If `true`, no program files exist at all.
 - **`not_due`**: If `true`, programs exist but none are due for this run.
+- **`head_branch`**: The canonical long-running branch name for the selected program — always exactly `autoloop/{program-name}`, never with a suffix or hash. Use this value verbatim when creating, checking out, or pushing to the branch.
+- **`existing_pr`**: The number of the open draft PR for `autoloop/{program-name}`, or `null` if no PR exists yet. Use this to enforce the single-PR-per-program invariant — see [Step 5a: Push and wait for CI](#step-5a-push-and-wait-for-ci) and [Step 5c: Accept](#step-5c-accept).
 
 If `selected` is not null:
 1. Read the program file from the `selected_file` path.
@@ -296,6 +299,16 @@ Examples:
 - `autoloop/function_minimization`
 - `autoloop/signal_processing`
 - `autoloop/coverage`
+
+> ⚠️ **CRITICAL — Branch Name Must Be Exact**
+>
+> The branch name is ALWAYS exactly `autoloop/{program-name}` — **no suffixes, no hashes, no run IDs, no iteration numbers, no random tokens**. Never create branches like:
+> - ❌ `autoloop/coverage-abc123`
+> - ❌ `autoloop/coverage-iter42-deadbeef`
+> - ❌ `autoloop/coverage-1234567890`
+>
+> **Never let the gh-aw framework auto-generate a branch name.** You must explicitly name the branch when creating it. The pre-step provides the canonical name in the `head_branch` field of `/tmp/gh-aw/autoloop.json` — always use that value verbatim.
+
 
 ### How It Works
 
@@ -419,7 +432,10 @@ The accept path is split into three sub-steps: **5a (push and wait for CI)**, **
    - Commit message subject line: `[Autoloop: {program-name}] Iteration <N>: <short description>`
    - Commit message body (after a blank line): `Run: {run_url}` referencing the GitHub Actions run URL.
 2. Push the commit to the long-running branch.
-3. If a draft PR does not already exist for this branch, create it now (see Step 5c for the title/body format). The PR is needed so that CI runs and so `gh pr checks` has a target.
+3. **Find or create the PR** so CI runs and `gh pr checks` has a target. Follow these steps in order:
+   a. Check `existing_pr` from `/tmp/gh-aw/autoloop.json`. If it is not null, that is the existing draft PR — use it as `$EXISTING_PR` below; **never** call `create-pull-request`.
+   b. If `existing_pr` is null, also check the `PR` field in the state file's **⚙️ Machine State** table as a fallback. Verify it is still open via the GitHub API; if it has been closed or merged, treat it as if no PR exists and proceed to step (c).
+   c. If no PR exists (both sources are null): create one with `create-pull-request`, specifying `branch: autoloop/{program-name}` (the value of `head_branch` from `autoloop.json`) explicitly — do not let the framework auto-generate a branch name. See Step 5c for the title/body format.
 4. Wait for CI on the new HEAD and reduce all check-runs to a single status — `success`, `failure`, or `pending`:
 
    ```bash
@@ -458,10 +474,10 @@ If `status == "failure"`, **fix and retry — do not revert, do not accept**:
 **Only entered when `status == "success"`** from Step 5a (possibly after one or more fix attempts in Step 5b).
 
 1. The commit(s) are already on the long-running branch (pushed in Step 5a / 5b). No further pushing needed.
-2. If a draft PR does not already exist for this branch, create one:
+2. If a draft PR does not already exist for this branch (i.e., `existing_pr` from `autoloop.json` is null AND the state file's `PR` field is null or refers to a closed PR), create one — specify `branch: autoloop/{program-name}` (the value of `head_branch` from `autoloop.json`) explicitly so the framework does not auto-generate a branch name:
    - Title: `[Autoloop: {program-name}]`
    - Body includes: a summary of the program goal, link to the program issue, the current best metric, and AI disclosure: `🤖 *This PR is maintained by Autoloop. Each accepted iteration adds a commit to this branch.*`
-   If a draft PR already exists, update the PR body with the latest metric and a summary of the most recent accepted iteration. Add a comment to the PR summarizing the iteration: what changed, old metric, new metric, improvement delta, the **fix-attempt count** if `> 0`, and a link to the actions run.
+   If a draft PR already exists, use `push-to-pull-request-branch` (never `create-pull-request`). Update the PR body with the latest metric and a summary of the most recent accepted iteration. Add a comment to the PR summarizing the iteration: what changed, old metric, new metric, improvement delta, the **fix-attempt count** if `> 0`, and a link to the actions run.
 4. Ensure the program issue exists (see [Program Issue](#program-issue) below) — for file-based programs that have no program issue yet (`selected_issue` is null in `/tmp/gh-aw/autoloop.json`), create one and record its number in the state file's `Issue` field.
 5. Update the state file `{program-name}.md` in the repo-memory folder:
    - Update the **⚙️ Machine State** table: reset `consecutive_errors` to 0, set `best_metric`, increment `iteration_count`, set `last_run` to current UTC timestamp, append `"accepted"` to `recent_statuses` (keep last 10), set `paused` to false.
@@ -802,3 +818,17 @@ After each iteration, prepend an entry to the **📊 Iteration History** section
 - **Safety.** Never modify files outside the target list. Never modify the evaluation script. Never modify the program definition (except via `/autoloop` command mode).
 - **Read AGENTS.md first**: before starting work, read the repository's `AGENTS.md` file (if present) to understand project-specific conventions.
 - **Build and test**: run any build/test commands before creating PRs.
+
+## Common Mistakes to Avoid
+
+> ❌ **Do NOT create a new branch with a suffix for each iteration.**
+> Correct: `autoloop/coverage`
+> Wrong: `autoloop/coverage-abc123`, `autoloop/coverage-iter42`, `autoloop/coverage-deadbeef1234`
+> Use the `head_branch` field from `/tmp/gh-aw/autoloop.json` — it is always the canonical name. Never let the gh-aw framework auto-generate a branch name.
+
+> ❌ **Do NOT create a new PR if one already exists for `autoloop/{program-name}`.**
+> The pre-step provides `existing_pr` in `/tmp/gh-aw/autoloop.json`. If it is not null, **always** use `push-to-pull-request-branch` — never call `create-pull-request`. Only create a PR when `existing_pr` is null AND the state file's `PR` field is also null (or refers to a closed PR).
+
+> ❌ **Do NOT modify files outside the program's Target list.**
+> The Target section of the program file is the allowlist. Touching anything else (including the evaluation script or the program file itself) is forbidden.
+

@@ -41,6 +41,7 @@ import os
 import re
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
@@ -346,6 +347,87 @@ def _parse_target_metric_from_file(path):
 
 
 # ---------------------------------------------------------------------------
+# Existing PR lookup (single-PR-per-program invariant)
+# ---------------------------------------------------------------------------
+
+
+def _http_get_json(url, headers, timeout=30):
+    """Open ``url`` and return ``(parsed_body, link_header)``.
+
+    Returns ``(None, None)`` on any HTTP/network error so callers can fall
+    through to the next strategy. Broken out into a module-level helper so
+    tests can monkey-patch it without touching ``urllib`` directly.
+    """
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = json.loads(resp.read().decode())
+            link_header = resp.headers.get("link") or resp.headers.get("Link")
+            return body, link_header
+    except (urllib.error.URLError, urllib.error.HTTPError, ValueError, OSError):
+        return None, None
+
+
+def find_existing_pr_for_branch(repo, program_name, github_token, http_get_json=_http_get_json):
+    """Look up the open draft PR (if any) for ``autoloop/{program_name}``.
+
+    Returns the PR number, or ``None`` if none is found.
+
+    The single-PR-per-program invariant requires that we never open a second
+    draft PR for the same program. The agent uses the returned ``existing_pr``
+    to decide between ``create-pull-request`` (only if ``None``) and
+    ``push-to-pull-request-branch`` (always preferred when an open PR exists).
+
+    We also tolerate legacy framework-suffixed branch names of the form
+    ``autoloop/{program}-<6-40 hex chars>`` so installations upgrading from
+    before ``preserve-branch-name: true`` was set find their in-flight PR
+    rather than opening a second one.
+    """
+    if not repo or not program_name or not github_token:
+        return None
+    owner = repo.split("/", 1)[0]
+    canonical_branch = "autoloop/{}".format(program_name)
+    headers = {
+        "Authorization": "token {}".format(github_token),
+        "Accept": "application/vnd.github.v3+json",
+    }
+    # Strategy 1: exact canonical branch name via the head= filter.
+    head_q = urllib.parse.quote("{}:{}".format(owner, canonical_branch), safe="")
+    url = "https://api.github.com/repos/{}/pulls?head={}&state=open".format(repo, head_q)
+    body, _ = http_get_json(url, headers)
+    if isinstance(body, list) and body:
+        first = body[0]
+        if isinstance(first, dict) and first.get("number"):
+            return first["number"]
+
+    # Strategy 2: paginate open PRs and match either a legacy framework-suffixed
+    # branch (``autoloop/{name}-<6-40 hex>``) or a ``[Autoloop: {name}]`` title prefix.
+    suffix_regex = re.compile(
+        r"^autoloop/" + re.escape(program_name) + r"(-[0-9a-f]{6,40})?$"
+    )
+    title_prefix = "[Autoloop: {}]".format(program_name)
+    next_url = "https://api.github.com/repos/{}/pulls?state=open&per_page=100".format(repo)
+    while next_url:
+        body, link_header = http_get_json(next_url, headers)
+        if not isinstance(body, list):
+            break
+        for pr in body:
+            if not isinstance(pr, dict):
+                continue
+            head_ref = ""
+            head = pr.get("head") or {}
+            if isinstance(head, dict):
+                head_ref = head.get("ref") or ""
+            if suffix_regex.match(head_ref):
+                return pr.get("number")
+            title = pr.get("title")
+            if isinstance(title, str) and title.startswith(title_prefix):
+                return pr.get("number")
+        next_url = parse_link_header(link_header)
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Selection
 # ---------------------------------------------------------------------------
 
@@ -441,7 +523,15 @@ def main():
         print("NO_PROGRAMS_FOUND")
         with open(OUTPUT_FILE, "w") as f:
             json.dump(
-                {"due": [], "skipped": [], "unconfigured": [], "no_programs": True}, f
+                {
+                    "due": [],
+                    "skipped": [],
+                    "unconfigured": [],
+                    "no_programs": True,
+                    "head_branch": None,
+                    "existing_pr": None,
+                },
+                f,
             )
         sys.exit(0)
 
@@ -513,6 +603,20 @@ def main():
     if forced_program and selected:
         print("FORCED: running program '{}' (manual dispatch)".format(forced_program))
 
+    # Look up the existing draft PR (if any) for the selected program, so the
+    # agent can enforce the single-PR-per-program invariant: never call
+    # create-pull-request when a PR for autoloop/{name} already exists.
+    # head_branch is always the canonical name (no suffix, no hash).
+    head_branch = None
+    existing_pr = None
+    if selected:
+        head_branch = "autoloop/{}".format(selected)
+        try:
+            existing_pr = find_existing_pr_for_branch(repo, selected, github_token)
+        except Exception as e:  # noqa: BLE001 -- best-effort lookup
+            print("  Warning: existing PR lookup failed for {}: {}".format(selected, e))
+            existing_pr = None
+
     result = {
         "selected": selected,
         "selected_file": selected_file,
@@ -525,6 +629,8 @@ def main():
         "skipped": skipped,
         "unconfigured": unconfigured,
         "no_programs": False,
+        "head_branch": head_branch,
+        "existing_pr": existing_pr,
     }
 
     with open(OUTPUT_FILE, "w") as f:

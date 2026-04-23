@@ -770,3 +770,208 @@ class TestSyncBranchesCredentialOrdering:
             f"'Configure Git credentials' (index {cred_idx}) must come before "
             f"merge step (index {merge_idx}). Steps: {steps}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Single-PR-per-program invariant: safe-outputs config + existing_pr lookup
+# (issue: enforce single-PR-per-program invariant)
+# ---------------------------------------------------------------------------
+
+class TestSafeOutputsConfig:
+    """Verify the safe-outputs config that defends the single-PR invariant.
+
+    Without `preserve-branch-name: true`, the gh-aw framework auto-suffixes
+    branch names on every run, breaking the single-long-running-branch model.
+    Without `max: 1` on both create-pull-request and push-to-pull-request-branch,
+    the agent could emit a create+create or create+push pair in the same iteration.
+    """
+
+    def _frontmatter(self):
+        import os
+        wf_path = os.path.join(os.path.dirname(__file__), "..", "workflows", "autoloop.md")
+        with open(wf_path) as f:
+            content = f.read()
+        # Frontmatter is the first --- ... --- block
+        m = re.match(r"^---\s*\n(.*?)\n---\s*\n", content, re.DOTALL)
+        assert m, "Could not find YAML frontmatter in workflows/autoloop.md"
+        return m.group(1)
+
+    def test_create_pr_preserves_branch_name(self):
+        fm = self._frontmatter()
+        # create-pull-request block must contain preserve-branch-name: true
+        m = re.search(r"create-pull-request:\s*\n((?:\s{4}.*\n)+)", fm)
+        assert m, "Could not find create-pull-request block in safe-outputs"
+        block = m.group(1)
+        assert "preserve-branch-name: true" in block, (
+            "create-pull-request must set 'preserve-branch-name: true' to keep "
+            "the canonical branch name autoloop/{program}; otherwise gh-aw "
+            "appends a hex salt and breaks the single-PR invariant.\n"
+            f"Block: {block}"
+        )
+
+    def test_create_pr_max_is_one(self):
+        fm = self._frontmatter()
+        m = re.search(r"create-pull-request:\s*\n((?:\s{4}.*\n)+)", fm)
+        assert m
+        block = m.group(1)
+        assert re.search(r"^\s*max:\s*1\s*$", block, re.MULTILINE), (
+            "create-pull-request must set 'max: 1' — the invariant is one "
+            "safe-output of either create or push per iteration, never two.\n"
+            f"Block: {block}"
+        )
+
+    def test_push_to_pr_max_is_one(self):
+        fm = self._frontmatter()
+        m = re.search(r"push-to-pull-request-branch:\s*\n((?:\s{4}.*\n)+)", fm)
+        assert m, "Could not find push-to-pull-request-branch block in safe-outputs"
+        block = m.group(1)
+        assert re.search(r"^\s*max:\s*1\s*$", block, re.MULTILINE), (
+            "push-to-pull-request-branch must set 'max: 1'.\n"
+            f"Block: {block}"
+        )
+
+
+class TestProseGuidance:
+    """Verify the prose guidance enforcing the single-PR invariant is present."""
+
+    def _content(self):
+        import os
+        wf_path = os.path.join(os.path.dirname(__file__), "..", "workflows", "autoloop.md")
+        with open(wf_path) as f:
+            return f.read()
+
+    def test_branch_name_warning_present(self):
+        c = self._content()
+        assert "Branch Name Must Be Exact" in c, (
+            "Missing the 'Branch Name Must Be Exact' warning that tells the "
+            "agent to never use suffixed branch names."
+        )
+        assert "no suffixes" in c.lower(), "Warning should mention 'no suffixes'"
+
+    def test_common_mistakes_section_present(self):
+        c = self._content()
+        assert "## Common Mistakes to Avoid" in c, (
+            "Missing the 'Common Mistakes to Avoid' section."
+        )
+
+    def test_step5_uses_existing_pr(self):
+        c = self._content()
+        # Step 5 accept flow must reference existing_pr from autoloop.json
+        assert "existing_pr" in c, (
+            "Workflow prose must instruct the agent to consult the "
+            "`existing_pr` field from /tmp/gh-aw/autoloop.json."
+        )
+        assert "head_branch" in c, (
+            "Workflow prose must instruct the agent to use the `head_branch` "
+            "field from /tmp/gh-aw/autoloop.json."
+        )
+
+
+# ---------------------------------------------------------------------------
+# find_existing_pr_for_branch helper — tolerant lookup of the open draft PR
+# ---------------------------------------------------------------------------
+
+
+def _run_find_existing_pr(program, mock_responses):
+    """Invoke ``find_existing_pr_for_branch`` with a stubbed HTTP client.
+
+    ``mock_responses`` is a list of dicts: ``{ url_match, status, body, link }``.
+    The first entry whose ``url_match`` substring is contained in the requested
+    URL wins. The optional ``link`` field is returned as the Link response
+    header (used by pagination via ``parse_link_header``). ``status`` is kept
+    for parity with the previous JS-based stub but only the ``200`` path is
+    exercised — non-200 responses surface as ``(None, None)`` from the real
+    ``_http_get_json``, which the helper here mirrors when ``status != 200``.
+    """
+    def stub(url, headers, timeout=30):
+        for r in mock_responses:
+            if r["url_match"] in url:
+                if r.get("status", 200) != 200:
+                    return None, None
+                return r.get("body"), r.get("link")
+        return None, None
+
+    return autoloop_scheduler.find_existing_pr_for_branch(
+        "owner/repo", program, "TOKEN", http_get_json=stub
+    )
+
+
+class TestFindExistingPRForBranch:
+    """The tolerant PR lookup that closes the single-PR-per-program invariant."""
+
+    def test_returns_null_when_no_pr_exists(self):
+        # Strategy 1 returns []; strategy 2 returns []
+        responses = [
+            {"url_match": "head=owner%3Aautoloop%2Fcoverage", "status": 200, "body": []},
+            {"url_match": "/pulls?state=open", "status": 200, "body": []},
+        ]
+        assert _run_find_existing_pr("coverage", responses) is None
+
+    def test_finds_pr_with_canonical_branch_name(self):
+        responses = [
+            {
+                "url_match": "head=owner%3Aautoloop%2Fcoverage",
+                "status": 200,
+                "body": [{"number": 42, "head": {"ref": "autoloop/coverage"}, "title": "[Autoloop] x"}],
+            },
+        ]
+        assert _run_find_existing_pr("coverage", responses) == 42
+
+    def test_finds_pr_with_legacy_hex_suffix(self):
+        # Strategy 1 finds nothing (the open PR has a suffixed branch name);
+        # Strategy 2 falls back to listing all open PRs and matches the suffix regex.
+        responses = [
+            {"url_match": "head=owner%3Aautoloop%2Fcoverage", "status": 200, "body": []},
+            {
+                "url_match": "/pulls?state=open",
+                "status": 200,
+                "body": [
+                    {"number": 99, "head": {"ref": "autoloop/coverage-8724e9f9"}, "title": "[Autoloop] x"},
+                ],
+            },
+        ]
+        assert _run_find_existing_pr("coverage", responses) == 99
+
+    def test_finds_pr_via_title_prefix_fallback(self):
+        # Branch name doesn't match suffix pattern, but title prefix does
+        responses = [
+            {"url_match": "head=owner%3Aautoloop%2Fcoverage", "status": 200, "body": []},
+            {
+                "url_match": "/pulls?state=open",
+                "status": 200,
+                "body": [
+                    {"number": 7, "head": {"ref": "totally-different-branch"}, "title": "[Autoloop: coverage] iter 3"},
+                ],
+            },
+        ]
+        assert _run_find_existing_pr("coverage", responses) == 7
+
+    def test_does_not_match_unrelated_program(self):
+        # autoloop/coverage-extras is a different program, not a hex suffix
+        responses = [
+            {"url_match": "head=owner%3Aautoloop%2Fcoverage", "status": 200, "body": []},
+            {
+                "url_match": "/pulls?state=open",
+                "status": 200,
+                "body": [
+                    {"number": 11, "head": {"ref": "autoloop/coverage-extras"}, "title": "[Autoloop] other"},
+                ],
+            },
+        ]
+        assert _run_find_existing_pr("coverage", responses) is None
+
+    def test_does_not_match_other_program_with_similar_name(self):
+        # Program name with regex-special-ish characters (underscore is fine, but
+        # we want to make sure the regex is properly anchored to ^...$).
+        responses = [
+            {"url_match": "head=owner%3Aautoloop%2Fsignal_processing", "status": 200, "body": []},
+            {
+                "url_match": "/pulls?state=open",
+                "status": 200,
+                "body": [
+                    # Branch for a different program that happens to share a prefix
+                    {"number": 5, "head": {"ref": "autoloop/signal"}, "title": "[Autoloop] other"},
+                ],
+            },
+        ]
+        assert _run_find_existing_pr("signal_processing", responses) is None

@@ -257,3 +257,24 @@ class TestSchedulerEndToEnd:
         assert proc.returncode == 0, proc.stderr
         assert out["unconfigured"] == ["example"]
         assert out["selected"] is None
+
+    def test_head_branch_set_when_program_selected(self, workdir):
+        """``head_branch`` is exactly ``autoloop/{name}`` for the selected program."""
+        _write_program(workdir, "coverage")
+        proc, out = _run_scheduler(str(workdir))
+        assert proc.returncode == 0, proc.stderr
+        assert out["selected"] == "coverage"
+        assert out["head_branch"] == "autoloop/coverage"
+        # The bogus DNS repo means the PR API call fails → existing_pr is None.
+        assert out["existing_pr"] is None
+
+    def test_head_branch_null_when_nothing_selected(self, workdir):
+        """When no program is due, ``head_branch`` is ``null`` in the output."""
+        # Empty programs dir → bootstrap creates an unconfigured template, which
+        # does NOT count as selected. So head_branch should be null.
+        shutil.rmtree(workdir / ".autoloop" / "programs")
+        proc, out = _run_scheduler(str(workdir))
+        assert proc.returncode == 0, proc.stderr
+        assert out["selected"] is None
+        assert out["head_branch"] is None
+        assert out["existing_pr"] is None
