@@ -786,18 +786,31 @@ class TestSyncBranchesCredentialOrdering:
         return step_names
 
     def _load_lock_steps(self):
-        """Return the list of step names from .github/workflows/sync-branches.lock.yml."""
+        """Return the list of step names from the agent job in
+        .github/workflows/sync-branches.lock.yml.
+
+        Parsed with a regex (rather than PyYAML) so the test has no
+        external dependencies beyond pytest.
+        """
         import os
-        import yaml
 
         lock_path = os.path.join(
             os.path.dirname(__file__), "..", ".github", "workflows", "sync-branches.lock.yml"
         )
         with open(lock_path) as f:
-            data = yaml.safe_load(f)
-        # Collect step names from the 'agent' job
-        steps = data.get("jobs", {}).get("agent", {}).get("steps", [])
-        return [s.get("name", "") for s in steps if s.get("name")]
+            content = f.read()
+        # Restrict to the 'agent:' job body so we don't pick up step names
+        # from other jobs (e.g. 'activation').
+        agent_match = re.search(r"^  agent:\n((?:    .*\n|\n)+)", content, re.MULTILINE)
+        if not agent_match:
+            return []
+        agent_body = agent_match.group(1)
+        # Step names appear as either '      - name: <Name>' or
+        # '        name: <Name>' (when the step starts with '- env:').
+        step_names = []
+        for m in re.finditer(r'^\s{6,8}(?:- )?name:\s*(.+)$', agent_body, re.MULTILINE):
+            step_names.append(m.group(1).strip())
+        return step_names
 
     def test_cred_step_exists(self):
         """A step that configures Git identity/auth must exist in the source."""
