@@ -57,6 +57,13 @@ ISSUE_PROGRAMS_DIR = "/tmp/gh-aw/issue-programs"
 OUTPUT_DIR = "/tmp/gh-aw"
 OUTPUT_FILE = os.path.join(OUTPUT_DIR, "autoloop.json")
 
+# Default repo-memory ``max-file-size`` for state files. Mirrors the value
+# configured under ``tools.repo-memory.max-file-size`` in
+# ``workflows/autoloop.md``. Surfaced in the scheduler output so the agent
+# prompt can reason about the rolling-compaction budget without re-parsing
+# workflow frontmatter.
+STATE_FILE_MAX_BYTES = 30720
+
 
 # ---------------------------------------------------------------------------
 # Pure helpers (unit-tested directly)
@@ -212,6 +219,22 @@ def read_program_state(program_name, repo_memory_dir=REPO_MEMORY_DIR):
     with open(state_file, encoding="utf-8") as f:
         content = f.read()
     return parse_machine_state(content)
+
+
+def get_state_file_size(program_name, repo_memory_dir=REPO_MEMORY_DIR):
+    """Return the size of the program's state file in bytes (0 if missing).
+
+    Surfaced in ``autoloop.json`` as ``state_file_size_bytes`` so the agent
+    can decide whether to compact the state file aggressively this iteration
+    (see the rolling-compaction rule in ``workflows/autoloop.md``'s
+    "Update Rules" section).
+    """
+    state_file = os.path.join(repo_memory_dir, "{}.md".format(program_name))
+    try:
+        st = os.stat(state_file)
+    except OSError:
+        return 0
+    return st.st_size
 
 
 def _bootstrap_template_if_missing():
@@ -622,6 +645,8 @@ def main():
         "selected_file": selected_file,
         "selected_issue": selected_issue,
         "selected_target_metric": selected_target_metric,
+        "state_file_size_bytes": get_state_file_size(selected) if selected else 0,
+        "state_file_max_bytes": STATE_FILE_MAX_BYTES,
         "issue_programs": {
             name: info["issue_number"] for name, info in issue_programs.items()
         },
