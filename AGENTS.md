@@ -12,8 +12,10 @@ autoloop/
 ├── workflows/                         ← Agentic Workflow definitions
 │   ├── autoloop.md                    ← main autoloop workflow (compiled by gh-aw)
 │   ├── sync-branches.md               ← syncs default branch into autoloop/* branches
-│   └── shared/                        ← shared workflow fragments
-│       └── reporting.md
+│   ├── shared/                        ← shared workflow fragments
+│   │   └── reporting.md
+│   └── scripts/                       ← standalone scripts invoked from steps
+│       └── autoloop_scheduler.py      ← scheduler (see workflows/autoloop.md)
 ├── .autoloop/
 │   └── programs/                      ← research programs (directory-based)
 │       ├── function_minimization/
@@ -89,13 +91,13 @@ Programs can include an Evolution Strategy section (inspired by OpenEvolve) that
 - Evaluation commands must output JSON with a numeric metric
 - Each program has a single **long-running branch** named `autoloop/<program-name>` that accumulates all accepted iterations
 - A single **draft PR** per program is created on the first accepted iteration and accumulates subsequent commits
-- A **steering issue** per program (`[Autoloop: <program-name>] Steering`) links the branch, PR, and state together
+- A single **program issue** per program (`[Autoloop: <program-name>]`, labeled `autoloop-program`) is the single source of truth for the program — it hosts the status comment, per-iteration comments, and human steering. For issue-based programs this is the source issue; for file-based programs it is auto-created on the first run.
 - All state lives in repo-memory — per-program state files on the `memory/autoloop` branch are the single source of truth for both scheduling/machine state and human-readable research context
 - State files: `<program-name>.md` on the `memory/autoloop` branch (per-program with Machine State table + research sections)
-- Experiment history is tracked in the state file's Iteration History section and via per-run comments on the source issue (for issue-based programs)
+- Experiment history is tracked in the state file's Iteration History section and via per-iteration comments on the program issue
 - The default branch is automatically merged into all `autoloop/*` branches whenever it changes
 - Issue-based programs are discovered via the `autoloop-program` label; the issue body is the program definition
-- For issue-based programs, a status comment (marked with `<!-- AUTOLOOP:STATUS -->`) is maintained on the source issue, and a per-run comment is posted after each iteration
+- A status comment (marked with `<!-- AUTOLOOP:STATUS -->`) is maintained on every program issue (the earliest bot comment, edited in place each iteration), and a per-iteration comment is posted after each iteration
 - Programs can be **open-ended** (run indefinitely) or **goal-oriented** (run until `target-metric` in frontmatter is reached). When a goal-oriented program completes, the `autoloop-program` label is removed and `autoloop-completed` is added (for issue-based programs)
 - When proposing a new program, always clarify whether it is open-ended or goal-oriented
 
@@ -134,6 +136,7 @@ To deploy the workflow to a repository:
 1. Copy `workflows/autoloop.md` to `.github/workflows/autoloop.md` in the target repo
 2. Copy `workflows/sync-branches.md` to `.github/workflows/sync-branches.md` in the target repo
 3. Copy `workflows/shared/` to `.github/workflows/shared/` in the target repo
-4. Run `gh aw compile autoloop` and `gh aw compile sync-branches` to generate the lock files
-5. Copy program directories to `.autoloop/programs/` in the target repo
-6. Commit and push
+4. Copy `workflows/scripts/` to `.github/workflows/scripts/` in the target repo
+5. Run `gh aw compile autoloop` and `gh aw compile sync-branches` to generate the lock files
+6. Copy program directories to `.autoloop/programs/` in the target repo
+7. Commit and push

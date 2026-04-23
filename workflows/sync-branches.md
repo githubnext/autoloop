@@ -96,19 +96,69 @@ steps:
           git('fetch', 'origin', branch);
           git('fetch', 'origin', defaultBranch);
 
-          // Check out the program branch
-          let checkout = git('checkout', branch);
-          if (checkout.returncode !== 0) {
-              // Try creating a local tracking branch
-              checkout = git('checkout', '-b', branch, 'origin/' + branch);
+          // Compute ahead/behind counts using the remote-tracking refs so we
+          // make a decision based on commit delta (not content delta).
+          const aheadResult = git('rev-list', '--count',
+              'origin/' + defaultBranch + '..origin/' + branch);
+          const behindResult = git('rev-list', '--count',
+              'origin/' + branch + '..origin/' + defaultBranch);
+          if (aheadResult.returncode !== 0 || behindResult.returncode !== 0) {
+              console.log('  Failed to compute ahead/behind for ' + branch + ': ' +
+                  (aheadResult.stderr || behindResult.stderr));
+              failed.push(branch);
+              continue;
           }
+          const ahead = parseInt((aheadResult.stdout || '0').trim(), 10) || 0;
+          const behind = parseInt((behindResult.stdout || '0').trim(), 10) || 0;
+          console.log('  ahead=' + ahead + ' behind=' + behind);
+
+          if (ahead === 0 && behind > 0) {
+              // All of the branch's commits are already in the default branch.
+              // Merging would produce a noisy "Merge main into branch" commit
+              // that re-exposes every historical file as a patch touch — the
+              // failure mode that triggers gh-aw's E003 (>100 files) when a
+              // new PR is opened. Fast-forward the canonical branch instead.
+              // This is lossless because ahead=0 proves every commit on the
+              // branch is already reachable from the default branch.
+              const ff = git('checkout', '-B', branch, 'origin/' + defaultBranch);
+              if (ff.returncode !== 0) {
+                  console.log('  Failed to fast-forward ' + branch + ': ' + ff.stderr);
+                  failed.push(branch);
+                  continue;
+              }
+              // Use --force-with-lease so that if anyone else is simultaneously
+              // pushing to the branch, the update is rejected rather than
+              // overwriting their commits.
+              const push = git('push', '--force-with-lease', 'origin', branch);
+              if (push.returncode !== 0) {
+                  console.log('  Failed to force-push ' + branch + ': ' + push.stderr);
+                  failed.push(branch);
+                  continue;
+              }
+              console.log('  Fast-forwarded ' + branch + ' to origin/' + defaultBranch);
+              continue;
+          }
+
+          if (ahead === 0 && behind === 0) {
+              // Already at default branch — nothing to do.
+              console.log('  ' + branch + ' is already up to date with origin/' + defaultBranch);
+              continue;
+          }
+
+          if (ahead > 0 && behind === 0) {
+              // Unique work preserved; no upstream drift to merge.
+              console.log('  ' + branch + ' is ahead of origin/' + defaultBranch + ' with no upstream drift; nothing to merge.');
+              continue;
+          }
+
+          // True divergence (ahead > 0 && behind > 0): check out and merge.
+          let checkout = git('checkout', '-B', branch, 'origin/' + branch);
           if (checkout.returncode !== 0) {
               console.log('  Failed to checkout ' + branch + ': ' + checkout.stderr);
               failed.push(branch);
               continue;
           }
 
-          // Merge the default branch into the program branch
           const merge = git('merge', 'origin/' + defaultBranch, '--no-edit',
               '-m', 'Merge ' + defaultBranch + ' into ' + branch);
           if (merge.returncode !== 0) {

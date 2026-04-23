@@ -1,117 +1,36 @@
-"""
-Extract scheduling functions directly from the workflow pre-step heredoc.
+"""Test fixtures for the standalone Autoloop scheduler.
 
-Instead of duplicating the workflow's JavaScript code in a separate module, we parse
-workflows/autoloop.md, extract the JavaScript heredoc, write the function definitions
-to a temp CommonJS module, and call them via Node.js subprocess.
-
-This ensures tests always run against the actual workflow code.
+The scheduler logic lives in ``workflows/scripts/autoloop_scheduler.py`` and is
+also distributed at ``.github/workflows/scripts/autoloop_scheduler.py`` (the
+dogfooded deploy copy). Tests import the source module directly via importlib.
 """
 
-import json
+import importlib.util
 import os
-import re
-import subprocess
-import tempfile
-from datetime import timedelta
+import sys
 
-WORKFLOW_PATH = os.path.join(os.path.dirname(__file__), "..", "workflows", "autoloop.md")
-
-# Path to the extracted JS module
-_JS_MODULE_PATH = os.path.join(tempfile.gettempdir(), "autoloop_test_functions.cjs")
-
-
-def _load_workflow_functions():
-    """Parse workflows/autoloop.md and extract JS function defs from the pre-step."""
-    with open(WORKFLOW_PATH) as f:
-        content = f.read()
-
-    # Extract the JavaScript heredoc between JSEOF markers
-    m = re.search(r"node - << 'JSEOF'\n(.*?)\n\s*JSEOF", content, re.DOTALL)
-    assert m, "Could not find JSEOF heredoc in workflows/autoloop.md"
-    source = m.group(1)
-
-    # Extract function definitions: everything up to the main() async function.
-    # Functions are defined before 'async function main()'
-    lines = source.split("\n")
-    func_lines = []
-    for line in lines:
-        if line.strip().startswith("async function main"):
-            break
-        func_lines.append(line)
-
-    func_source = "\n".join(func_lines)
-
-    # Write to a temp .cjs file with module.exports
-    with open(_JS_MODULE_PATH, "w") as f:
-        f.write(func_source)
-        f.write(
-            "\n\nmodule.exports = "
-            "{ parseMachineState, parseSchedule, getProgramName, readProgramState, parseLinkHeader, findExistingPRForBranch };\n"
-        )
-
-    return True
-
-
-def _call_js(func_name, *args):
-    """Call a JS function from the extracted workflow module and return the result."""
-    args_json = json.dumps(list(args))
-    escaped_path = json.dumps(_JS_MODULE_PATH)
-    script = (
-        "const m = require(" + escaped_path + ");\n"
-        "const result = m." + func_name + "(..." + args_json + ");\n"
-        "process.stdout.write(JSON.stringify(result === undefined ? null : result));\n"
+# Path to the standalone scheduler script (source-of-truth lives in workflows/).
+SCHEDULER_PATH = os.path.normpath(
+    os.path.join(
+        os.path.dirname(__file__),
+        "..",
+        "workflows",
+        "scripts",
+        "autoloop_scheduler.py",
     )
-    result = subprocess.run(
-        ["node", "-e", script],
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    if result.returncode != 0:
-        raise RuntimeError("Node.js error calling " + func_name + ": " + result.stderr)
-    if not result.stdout.strip():
-        return None
-    return json.loads(result.stdout)
+)
+
+_spec = importlib.util.spec_from_file_location("autoloop_scheduler", SCHEDULER_PATH)
+autoloop_scheduler = importlib.util.module_from_spec(_spec)
+sys.modules["autoloop_scheduler"] = autoloop_scheduler
+_spec.loader.exec_module(autoloop_scheduler)
 
 
-# Initialize at import time
-_load_workflow_functions()
-
-
-def _parse_schedule_wrapper(s):
-    """Python wrapper for JS parseSchedule. Converts milliseconds to timedelta."""
-    ms = _call_js("parseSchedule", s)
-    if ms is None:
-        return None
-    return timedelta(milliseconds=ms)
-
-
-def _parse_machine_state_wrapper(content):
-    """Python wrapper for JS parseMachineState."""
-    return _call_js("parseMachineState", content)
-
-
-def _get_program_name_wrapper(pf):
-    """Python wrapper for JS getProgramName."""
-    return _call_js("getProgramName", pf)
-
-
+# Backwards-compatible function map (mirrors the previous JS-extracting conftest).
 _funcs = {
-    "parse_schedule": _parse_schedule_wrapper,
-    "parse_machine_state": _parse_machine_state_wrapper,
-    "get_program_name": _get_program_name_wrapper,
-    "read_program_state": lambda name: _call_js("readProgramState", name),
-    "parse_link_header": lambda header: _call_js("parseLinkHeader", header),
+    "parse_schedule": autoloop_scheduler.parse_schedule,
+    "parse_machine_state": autoloop_scheduler.parse_machine_state,
+    "get_program_name": autoloop_scheduler.get_program_name,
+    "read_program_state": autoloop_scheduler.read_program_state,
+    "parse_link_header": autoloop_scheduler.parse_link_header,
 }
-
-
-def _extract_inline_pattern(name):
-    """Extract the JavaScript heredoc source from the workflow.
-
-    This is a helper for inspecting the full inline source if needed.
-    """
-    with open(WORKFLOW_PATH) as f:
-        content = f.read()
-    m = re.search(r"node - << 'JSEOF'\n(.*?)\n\s*JSEOF", content, re.DOTALL)
-    return m.group(1) if m else ""
