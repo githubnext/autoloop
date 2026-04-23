@@ -194,6 +194,7 @@ The pre-step has already determined which program to run. Read `/tmp/gh-aw/autol
 - **`selected_file`**: The full path to the program's markdown file (either `.autoloop/programs/<name>/program.md`, `.autoloop/programs/<name>.md`, or `/tmp/gh-aw/issue-programs/<name>.md` for issue-based programs).
 - **`selected_issue`**: The GitHub issue number if the selected program came from an issue, or `null` if it came from a file.
 - **`selected_target_metric`**: The `target-metric` value from the program's frontmatter (a number), or `null` if the program is open-ended. Used to check the [halting condition](#halting-condition) after each accepted iteration.
+- **`selected_metric_direction`**: One of `"higher"` (default) or `"lower"`, parsed from the program's `metric_direction` frontmatter field. Determines whether **larger** or **smaller** metric values count as improvement. Used by the metric-improved check in [Step 5](#step-5-accept-or-reject), the iteration-history delta sign, and the [halting condition](#halting-condition).
 - **`state_file_size_bytes`**: Current size of the selected program's state file in bytes (0 if it does not exist yet). Use this together with `state_file_max_bytes` to decide whether to compact aggressively this iteration (see [Update Rules](#update-rules) — when size exceeds 80% of the max, collapse older iteration entries).
 - **`state_file_max_bytes`**: The configured `max-file-size` for repo-memory state files (default `30720`, i.e. 30 KB). Files larger than this are rejected by repo-memory, breaking scheduling.
 - **`issue_programs`**: A mapping of program name → issue number for all discovered issue-based programs.
@@ -257,7 +258,7 @@ schedule: every 1h
 
 ### Target Metric (Halting Condition)
 
-Programs can optionally specify a `target-metric` in the frontmatter to define a halting condition. When the metric reaches or surpasses the target, the program is automatically **completed**: the `autoloop-program` label is removed and an `autoloop-completed` label is added (for issue-based programs), and the state file is marked `Completed: true`.
+Programs can optionally specify a `target-metric` in the frontmatter to define a halting condition. When the metric reaches or surpasses the target (in the direction set by `metric_direction`), the program is automatically **completed**: the `autoloop-program` label is removed and an `autoloop-completed` label is added (for issue-based programs), and the state file is marked `Completed: true`.
 
 Programs without a `target-metric` are **open-ended** and run indefinitely until manually stopped.
 
@@ -270,6 +271,28 @@ target-metric: 0.95
 # Autoloop Program
 ...
 ```
+
+### Metric Direction
+
+By default Autoloop assumes **higher is better** — `best_metric` is ratcheted up each accepted iteration, and a `target-metric` is met when `best_metric >= target-metric`. Programs whose natural fitness is *lower is better* (error, latency, cost, ratio, fitness score) can opt into reversed semantics with the optional `metric_direction` field:
+
+```markdown
+---
+schedule: every 6h
+metric_direction: lower   # defaults to "higher" if omitted
+target-metric: 0.9        # interpreted as "program is complete when best_metric ≤ 0.9"
+---
+```
+
+Allowed values are `higher` (default) and `lower`. Any other value is rejected at frontmatter-parse time, the scheduler logs a warning, and the program falls back to `higher`.
+
+When `metric_direction: lower` is set:
+
+- An iteration's metric is "improved" when `new_metric < best_metric` (instead of `>`).
+- Iteration History entries show a `-<delta>` (negative delta = improvement) instead of `+<delta>`.
+- The halting condition fires when `best_metric <= target-metric` (instead of `>=`).
+
+The agent reads `selected_metric_direction` from `/tmp/gh-aw/autoloop.json` to determine which direction applies to the current iteration. Programs that omit the field are treated as `higher` — no behaviour change for existing programs.
 
 ## Program Definition
 
@@ -435,6 +458,12 @@ The accept path is split into three sub-steps: **5a (push and wait for CI)**, **
 
 **Only entered if the metric improved** (or this is the first run establishing a baseline).
 
+Improvement is **direction-aware**:
+- If `selected_metric_direction` is `"higher"` (default): the metric improved when `new_metric > best_metric`.
+- If `selected_metric_direction` is `"lower"`: the metric improved when `new_metric < best_metric`.
+
+Read `selected_metric_direction` from `/tmp/gh-aw/autoloop.json` to know which direction applies. The first run (no `best_metric` yet) always counts as an improvement regardless of direction.
+
 1. Commit the changes to the long-running branch `autoloop/{program-name}` with a commit message referencing the actions run:
    - Commit message subject line: `[Autoloop: {program-name}] Iteration <N>: <short description>`
    - Commit message body (after a blank line): `Run: {run_url}` referencing the GitHub Actions run URL.
@@ -488,11 +517,15 @@ If `status == "failure"`, **fix and retry — do not revert, do not accept**:
 4. Ensure the program issue exists (see [Program Issue](#program-issue) below) — for file-based programs that have no program issue yet (`selected_issue` is null in `/tmp/gh-aw/autoloop.json`), create one and record its number in the state file's `Issue` field.
 5. Update the state file `{program-name}.md` in the repo-memory folder:
    - Update the **⚙️ Machine State** table: reset `consecutive_errors` to 0, set `best_metric`, increment `iteration_count`, set `last_run` to current UTC timestamp, append `"accepted"` to `recent_statuses` (keep last 10), set `paused` to false.
-   - Prepend an entry to **📊 Iteration History** (newest first) with status ✅, metric, PR link, the fix-attempt count if `> 0`, and a one-line summary of what changed and why it worked.
+   - Prepend an entry to **📊 Iteration History** (newest first) with status ✅, metric, **signed delta** (`+<delta>` for `higher`-direction programs, `-<delta>` for `lower`-direction programs — both arrows point in the "improvement" direction), PR link, the fix-attempt count if `> 0`, and a one-line summary of what changed and why it worked.
    - Update **📚 Lessons Learned** if this iteration revealed something new about the problem or what works.
    - Update **🔭 Future Directions** if this iteration opened new promising paths.
 6. **Update the program issue**: edit the status comment and post a per-iteration comment on the program issue (see [Program Issue](#program-issue)). Note the fix-attempt count in the per-iteration comment if `> 0`.
-7. **Check halting condition** (see [Halting Condition](#halting-condition)): If the program has a `target-metric` in its frontmatter and the new `best_metric` meets or surpasses the target, mark the program as completed.
+7. **Check halting condition** (see [Halting Condition](#halting-condition)): If the program has a `target-metric` in its frontmatter, compare the new `best_metric` against it using the program's metric direction (read `selected_metric_direction` from `/tmp/gh-aw/autoloop.json`):
+   - `higher`: completed when `best_metric >= target-metric`.
+   - `lower`: completed when `best_metric <= target-metric`.
+
+   When the target is met, mark the program as completed (set `Completed: true`, remove the `autoloop-program` label, add `autoloop-completed`).
 
 #### Coordination with PR-health-keeper workflows
 
@@ -607,9 +640,9 @@ Programs can be **open-ended** (run indefinitely until manually stopped) or **go
 
 1. Parse the `target-metric` value from the program's YAML frontmatter (if present).
 2. After each **accepted** iteration, compare the new `best_metric` against the `target-metric`.
-3. Determine whether the target is met based on the metric direction:
-   - If the program says "**higher is better**": the target is met when `best_metric >= target-metric`.
-   - If the program says "**lower is better**": the target is met when `best_metric <= target-metric`.
+3. Determine whether the target is met based on the program's `metric_direction` (read from `selected_metric_direction` in `/tmp/gh-aw/autoloop.json`; defaults to `higher` when unset):
+   - `higher` (default): the target is met when `best_metric >= target-metric`.
+   - `lower`: the target is met when `best_metric <= target-metric`.
 4. When the target is met, **complete** the program:
    - Set `Completed` to `true` in the state file's **⚙️ Machine State** table.
    - Set `Completed Reason` to a human-readable message (e.g., `target metric 0.95 reached with value 0.97`).
@@ -705,6 +738,7 @@ When creating or updating a program's state file in the repo-memory folder, use 
 | Iteration Count | 0 |
 | Best Metric | — |
 | Target Metric | — |
+| Metric Direction | higher |
 | Branch | `autoloop/{program-name}` |
 | PR | — |
 | Issue | — |
@@ -776,6 +810,7 @@ All iterations in reverse chronological order (newest first).
 | Iteration Count | integer | Total iterations completed |
 | Best Metric | number | Best metric value achieved so far |
 | Target Metric | number or `—` | Target metric from program frontmatter (halting condition). `—` if open-ended |
+| Metric Direction | `higher` or `lower` | Whether larger or smaller metric values count as improvement. Defaults to `higher` if absent (back-compat). Set from the program's `metric_direction` frontmatter field. |
 | Branch | branch name | Long-running branch: `autoloop/{program-name}` |
 | PR | `#number` or `—` | Draft PR number for this program |
 | Issue | `#number` or `—` | The single program issue (`[Autoloop: {program-name}]`) for this program. Hosts the status comment, per-iteration comments, and human steering comments. |
@@ -795,11 +830,13 @@ After each iteration, prepend an entry to the **📊 Iteration History** section
 
 - **Status**: ✅ Accepted / ❌ Rejected / ⚠️ Error
 - **Change**: {one-line description of what was tried}
-- **Metric**: {value} (previous best: {previous_best}, delta: {+/-delta})
+- **Metric**: {value} (previous best: {previous_best}, delta: {signed-delta})
 - **Commit**: {short_sha} *(if accepted)*
 - **CI fix attempts**: {N} *(omit if 0; only present for accepted iterations that needed fix-and-retry)*
 - **Notes**: {one or two sentences on what this iteration revealed}
 ```
+
+The `delta` is **signed by metric direction**: for `higher`-direction programs an improvement is `+<delta>`; for `lower`-direction programs an improvement is `-<delta>`. In both cases the sign points in the "improvement" direction so the entry reads naturally.
 
 ### Update Rules
 
