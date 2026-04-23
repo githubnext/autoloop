@@ -1,131 +1,55 @@
-"""Tests for the scheduling pre-step in workflows/autoloop.md.
+"""Tests for the standalone Autoloop scheduler.
 
-Functions are extracted directly from the workflow JavaScript heredoc at import
-time (see conftest.py) and called via Node.js subprocess — there is no separate
-copy of the scheduling code.
-
-For inline logic (slugify, frontmatter parsing, skip conditions, etc.) that
-isn't wrapped in a named function in the workflow, we write thin test helpers
-that replicate the exact inline pattern. These are documented with the
-workflow source patterns they correspond to.
+The scheduler module is imported directly (see ``conftest.py``); functions are
+exercised in-process. A few thin helpers below match the legacy 2-tuple/no-args
+shapes used by the tests, while delegating to the shared scheduler module.
 """
 
 import re
 from datetime import datetime, timezone, timedelta
-from conftest import _funcs
+from conftest import _funcs, autoloop_scheduler
 
 # ---------------------------------------------------------------------------
-# Functions extracted from the workflow via AST (see conftest.py)
+# Functions exposed by the scheduler module
 # ---------------------------------------------------------------------------
 parse_schedule = _funcs["parse_schedule"]
 parse_machine_state = _funcs["parse_machine_state"]
 get_program_name = _funcs["get_program_name"]
 parse_link_header = _funcs["parse_link_header"]
+is_unconfigured = autoloop_scheduler.is_unconfigured
+check_skip_conditions = autoloop_scheduler.check_skip_conditions
+select_program = autoloop_scheduler.select_program
 
 
 # ---------------------------------------------------------------------------
-# Thin helpers that replicate inline workflow patterns (not function defs).
-# Each documents the workflow source lines it mirrors.
+# Thin helpers preserving the legacy test-helper shapes.
 # ---------------------------------------------------------------------------
 
 def slugify_issue_title(title):
-    """Replicates the inline slug logic in the workflow's issue scanning section."""
-    slug = re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-')
+    """Slugify a title (the workflow's inline issue-scanning slug logic).
+
+    The scheduler module's ``slugify_issue_title`` falls back to ``"issue"``
+    when no number is provided and the title slugifies to empty; the original
+    inline workflow code only fell back when ``number`` was known. This helper
+    preserves the original behaviour by passing through an empty string.
+    """
+    slug = re.sub(r'[^a-z0-9]+', '-', (title or '').lower()).strip('-')
     slug = re.sub(r'-+', '-', slug)
     return slug
 
 
 def parse_frontmatter(content):
-    """Replicates the inline frontmatter parsing in the workflow's program scanning loop."""
-    content_stripped = re.sub(r'^(\s*<!--.*?-->\s*\n)*', '', content, flags=re.DOTALL)
-    schedule_delta = None
-    target_metric = None
-    fm_match = re.match(r"^---\s*\n(.*?)\n---\s*\n", content_stripped, re.DOTALL)
-    if fm_match:
-        for line in fm_match.group(1).split("\n"):
-            if line.strip().startswith("schedule:"):
-                schedule_str = line.split(":", 1)[1].strip()
-                schedule_delta = parse_schedule(schedule_str)
-            if line.strip().startswith("target-metric:"):
-                try:
-                    target_metric = float(line.split(":", 1)[1].strip())
-                except (ValueError, TypeError):
-                    pass
+    """Two-tuple wrapper over the scheduler's three-tuple frontmatter parser."""
+    schedule_delta, target_metric, _ = autoloop_scheduler.parse_program_frontmatter(content)
     return schedule_delta, target_metric
 
 
-def is_unconfigured(content):
-    """Replicates the inline unconfigured check in the workflow's program scanning loop."""
-    if "<!-- AUTOLOOP:UNCONFIGURED -->" in content:
-        return True
-    if re.search(r'\bTODO\b|\bREPLACE', content):
-        return True
-    return False
-
-
-def check_skip_conditions(state):
-    """Replicates the inline skip logic in the workflow's program scanning loop.
-
-    Returns (should_skip, reason).
-    """
-    # Line 348: completed check
-    if str(state.get("completed", "")).lower() == "true" or state.get("completed") is True:
-        return True, "completed: target metric reached"
-    # Line 353: paused check
-    if state.get("paused"):
-        return True, f"paused: {state.get('pause_reason', 'unknown')}"
-    # Lines 357-361: plateau check
-    recent = state.get("recent_statuses", [])[-5:]
-    if len(recent) >= 5 and all(s == "rejected" for s in recent):
-        return True, "plateau: 5 consecutive rejections"
-    return False, None
-
-
 def check_if_due(schedule_delta, last_run, now):
-    """Replicates the inline due check in the workflow's program scanning loop.
-
-    Returns (is_due, next_due_iso).
-    """
+    """Replicates the inline due check: ``(is_due, next_due_iso_or_None)``."""
     if schedule_delta and last_run:
         if now - last_run < schedule_delta:
             return False, (last_run + schedule_delta).isoformat()
     return True, None
-
-
-def select_program(due, forced_program=None, all_programs=None, unconfigured=None, issue_programs=None):
-    """Replicates the selection logic in the workflow's program selection section.
-
-    Returns (selected, selected_file, selected_issue, selected_target_metric, deferred, error).
-    """
-    all_programs = all_programs or {}
-    unconfigured = unconfigured or []
-    issue_programs = issue_programs or {}
-
-    if forced_program:
-        if forced_program not in all_programs:
-            return None, None, None, None, [], f"program '{forced_program}' not found"
-        if forced_program in unconfigured:
-            return None, None, None, None, [], f"program '{forced_program}' is unconfigured"
-        selected = forced_program
-        selected_file = all_programs[forced_program]
-        deferred = [p["name"] for p in due if p["name"] != forced_program]
-        selected_issue = issue_programs.get(selected)
-        selected_target_metric = None
-        for p in due:
-            if p["name"] == forced_program:
-                selected_target_metric = p.get("target_metric")
-                break
-        return selected, selected_file, selected_issue, selected_target_metric, deferred, None
-    elif due:
-        due.sort(key=lambda p: p["last_run"] or "")
-        selected = due[0]["name"]
-        selected_file = due[0]["file"]
-        selected_target_metric = due[0].get("target_metric")
-        deferred = [p["name"] for p in due[1:]]
-        selected_issue = issue_programs.get(selected)
-        return selected, selected_file, selected_issue, selected_target_metric, deferred, None
-
-    return None, None, None, None, [], None
 
 
 # ===========================================================================
@@ -617,7 +541,7 @@ class TestSelectProgram:
     def test_forced_issue_program(self):
         due = []
         all_progs = {"my-issue": "/tmp/gh-aw/issue-programs/my-issue.md"}
-        issue_progs = {"my-issue": 42}
+        issue_progs = {"my-issue": {"issue_number": 42, "file": "/tmp/x", "title": "X"}}
         selected, file, issue, target, deferred, err = select_program(
             due, forced_program="my-issue", all_programs=all_progs, issue_programs=issue_progs
         )
@@ -628,7 +552,7 @@ class TestSelectProgram:
         due = [
             {"name": "my-issue", "last_run": None, "file": "/tmp/my-issue.md", "target_metric": None},
         ]
-        issue_progs = {"my-issue": 7}
+        issue_progs = {"my-issue": {"issue_number": 7, "file": "/tmp/x", "title": "X"}}
         selected, file, issue, target, deferred, err = select_program(
             due, issue_programs=issue_progs
         )
@@ -786,18 +710,31 @@ class TestSyncBranchesCredentialOrdering:
         return step_names
 
     def _load_lock_steps(self):
-        """Return the list of step names from .github/workflows/sync-branches.lock.yml."""
+        """Return the list of step names from the agent job in
+        .github/workflows/sync-branches.lock.yml.
+
+        Parsed with a regex (rather than PyYAML) so the test has no
+        external dependencies beyond pytest.
+        """
         import os
-        import yaml
 
         lock_path = os.path.join(
             os.path.dirname(__file__), "..", ".github", "workflows", "sync-branches.lock.yml"
         )
         with open(lock_path) as f:
-            data = yaml.safe_load(f)
-        # Collect step names from the 'agent' job
-        steps = data.get("jobs", {}).get("agent", {}).get("steps", [])
-        return [s.get("name", "") for s in steps if s.get("name")]
+            content = f.read()
+        # Restrict to the 'agent:' job body so we don't pick up step names
+        # from other jobs (e.g. 'activation').
+        agent_match = re.search(r"^  agent:\n((?:    .*\n|\n)+)", content, re.MULTILINE)
+        if not agent_match:
+            return []
+        agent_body = agent_match.group(1)
+        # Step names appear as either '      - name: <Name>' or
+        # '        name: <Name>' (when the step starts with '- env:').
+        step_names = []
+        for m in re.finditer(r'^\s{6,8}(?:- )?name:\s*(.+)$', agent_body, re.MULTILINE):
+            step_names.append(m.group(1).strip())
+        return step_names
 
     def test_cred_step_exists(self):
         """A step that configures Git identity/auth must exist in the source."""
@@ -833,3 +770,208 @@ class TestSyncBranchesCredentialOrdering:
             f"'Configure Git credentials' (index {cred_idx}) must come before "
             f"merge step (index {merge_idx}). Steps: {steps}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Single-PR-per-program invariant: safe-outputs config + existing_pr lookup
+# (issue: enforce single-PR-per-program invariant)
+# ---------------------------------------------------------------------------
+
+class TestSafeOutputsConfig:
+    """Verify the safe-outputs config that defends the single-PR invariant.
+
+    Without `preserve-branch-name: true`, the gh-aw framework auto-suffixes
+    branch names on every run, breaking the single-long-running-branch model.
+    Without `max: 1` on both create-pull-request and push-to-pull-request-branch,
+    the agent could emit a create+create or create+push pair in the same iteration.
+    """
+
+    def _frontmatter(self):
+        import os
+        wf_path = os.path.join(os.path.dirname(__file__), "..", "workflows", "autoloop.md")
+        with open(wf_path) as f:
+            content = f.read()
+        # Frontmatter is the first --- ... --- block
+        m = re.match(r"^---\s*\n(.*?)\n---\s*\n", content, re.DOTALL)
+        assert m, "Could not find YAML frontmatter in workflows/autoloop.md"
+        return m.group(1)
+
+    def test_create_pr_preserves_branch_name(self):
+        fm = self._frontmatter()
+        # create-pull-request block must contain preserve-branch-name: true
+        m = re.search(r"create-pull-request:\s*\n((?:\s{4}.*\n)+)", fm)
+        assert m, "Could not find create-pull-request block in safe-outputs"
+        block = m.group(1)
+        assert "preserve-branch-name: true" in block, (
+            "create-pull-request must set 'preserve-branch-name: true' to keep "
+            "the canonical branch name autoloop/{program}; otherwise gh-aw "
+            "appends a hex salt and breaks the single-PR invariant.\n"
+            f"Block: {block}"
+        )
+
+    def test_create_pr_max_is_one(self):
+        fm = self._frontmatter()
+        m = re.search(r"create-pull-request:\s*\n((?:\s{4}.*\n)+)", fm)
+        assert m
+        block = m.group(1)
+        assert re.search(r"^\s*max:\s*1\s*$", block, re.MULTILINE), (
+            "create-pull-request must set 'max: 1' — the invariant is one "
+            "safe-output of either create or push per iteration, never two.\n"
+            f"Block: {block}"
+        )
+
+    def test_push_to_pr_max_is_one(self):
+        fm = self._frontmatter()
+        m = re.search(r"push-to-pull-request-branch:\s*\n((?:\s{4}.*\n)+)", fm)
+        assert m, "Could not find push-to-pull-request-branch block in safe-outputs"
+        block = m.group(1)
+        assert re.search(r"^\s*max:\s*1\s*$", block, re.MULTILINE), (
+            "push-to-pull-request-branch must set 'max: 1'.\n"
+            f"Block: {block}"
+        )
+
+
+class TestProseGuidance:
+    """Verify the prose guidance enforcing the single-PR invariant is present."""
+
+    def _content(self):
+        import os
+        wf_path = os.path.join(os.path.dirname(__file__), "..", "workflows", "autoloop.md")
+        with open(wf_path) as f:
+            return f.read()
+
+    def test_branch_name_warning_present(self):
+        c = self._content()
+        assert "Branch Name Must Be Exact" in c, (
+            "Missing the 'Branch Name Must Be Exact' warning that tells the "
+            "agent to never use suffixed branch names."
+        )
+        assert "no suffixes" in c.lower(), "Warning should mention 'no suffixes'"
+
+    def test_common_mistakes_section_present(self):
+        c = self._content()
+        assert "## Common Mistakes to Avoid" in c, (
+            "Missing the 'Common Mistakes to Avoid' section."
+        )
+
+    def test_step5_uses_existing_pr(self):
+        c = self._content()
+        # Step 5 accept flow must reference existing_pr from autoloop.json
+        assert "existing_pr" in c, (
+            "Workflow prose must instruct the agent to consult the "
+            "`existing_pr` field from /tmp/gh-aw/autoloop.json."
+        )
+        assert "head_branch" in c, (
+            "Workflow prose must instruct the agent to use the `head_branch` "
+            "field from /tmp/gh-aw/autoloop.json."
+        )
+
+
+# ---------------------------------------------------------------------------
+# find_existing_pr_for_branch helper — tolerant lookup of the open draft PR
+# ---------------------------------------------------------------------------
+
+
+def _run_find_existing_pr(program, mock_responses):
+    """Invoke ``find_existing_pr_for_branch`` with a stubbed HTTP client.
+
+    ``mock_responses`` is a list of dicts: ``{ url_match, status, body, link }``.
+    The first entry whose ``url_match`` substring is contained in the requested
+    URL wins. The optional ``link`` field is returned as the Link response
+    header (used by pagination via ``parse_link_header``). ``status`` is kept
+    for parity with the previous JS-based stub but only the ``200`` path is
+    exercised — non-200 responses surface as ``(None, None)`` from the real
+    ``_http_get_json``, which the helper here mirrors when ``status != 200``.
+    """
+    def stub(url, headers, timeout=30):
+        for r in mock_responses:
+            if r["url_match"] in url:
+                if r.get("status", 200) != 200:
+                    return None, None
+                return r.get("body"), r.get("link")
+        return None, None
+
+    return autoloop_scheduler.find_existing_pr_for_branch(
+        "owner/repo", program, "TOKEN", http_get_json=stub
+    )
+
+
+class TestFindExistingPRForBranch:
+    """The tolerant PR lookup that closes the single-PR-per-program invariant."""
+
+    def test_returns_null_when_no_pr_exists(self):
+        # Strategy 1 returns []; strategy 2 returns []
+        responses = [
+            {"url_match": "head=owner%3Aautoloop%2Fcoverage", "status": 200, "body": []},
+            {"url_match": "/pulls?state=open", "status": 200, "body": []},
+        ]
+        assert _run_find_existing_pr("coverage", responses) is None
+
+    def test_finds_pr_with_canonical_branch_name(self):
+        responses = [
+            {
+                "url_match": "head=owner%3Aautoloop%2Fcoverage",
+                "status": 200,
+                "body": [{"number": 42, "head": {"ref": "autoloop/coverage"}, "title": "[Autoloop] x"}],
+            },
+        ]
+        assert _run_find_existing_pr("coverage", responses) == 42
+
+    def test_finds_pr_with_legacy_hex_suffix(self):
+        # Strategy 1 finds nothing (the open PR has a suffixed branch name);
+        # Strategy 2 falls back to listing all open PRs and matches the suffix regex.
+        responses = [
+            {"url_match": "head=owner%3Aautoloop%2Fcoverage", "status": 200, "body": []},
+            {
+                "url_match": "/pulls?state=open",
+                "status": 200,
+                "body": [
+                    {"number": 99, "head": {"ref": "autoloop/coverage-8724e9f9"}, "title": "[Autoloop] x"},
+                ],
+            },
+        ]
+        assert _run_find_existing_pr("coverage", responses) == 99
+
+    def test_finds_pr_via_title_prefix_fallback(self):
+        # Branch name doesn't match suffix pattern, but title prefix does
+        responses = [
+            {"url_match": "head=owner%3Aautoloop%2Fcoverage", "status": 200, "body": []},
+            {
+                "url_match": "/pulls?state=open",
+                "status": 200,
+                "body": [
+                    {"number": 7, "head": {"ref": "totally-different-branch"}, "title": "[Autoloop: coverage] iter 3"},
+                ],
+            },
+        ]
+        assert _run_find_existing_pr("coverage", responses) == 7
+
+    def test_does_not_match_unrelated_program(self):
+        # autoloop/coverage-extras is a different program, not a hex suffix
+        responses = [
+            {"url_match": "head=owner%3Aautoloop%2Fcoverage", "status": 200, "body": []},
+            {
+                "url_match": "/pulls?state=open",
+                "status": 200,
+                "body": [
+                    {"number": 11, "head": {"ref": "autoloop/coverage-extras"}, "title": "[Autoloop] other"},
+                ],
+            },
+        ]
+        assert _run_find_existing_pr("coverage", responses) is None
+
+    def test_does_not_match_other_program_with_similar_name(self):
+        # Program name with regex-special-ish characters (underscore is fine, but
+        # we want to make sure the regex is properly anchored to ^...$).
+        responses = [
+            {"url_match": "head=owner%3Aautoloop%2Fsignal_processing", "status": 200, "body": []},
+            {
+                "url_match": "/pulls?state=open",
+                "status": 200,
+                "body": [
+                    # Branch for a different program that happens to share a prefix
+                    {"number": 5, "head": {"ref": "autoloop/signal"}, "title": "[Autoloop] other"},
+                ],
+            },
+        ]
+        assert _run_find_existing_pr("signal_processing", responses) is None
