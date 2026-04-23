@@ -109,469 +109,7 @@ steps:
       GITHUB_REPOSITORY: ${{ github.repository }}
       AUTOLOOP_PROGRAM: ${{ github.event.inputs.program }}
     run: |
-      node - << 'JSEOF'
-      const fs = require('fs');
-      const path = require('path');
-
-      const programsDir = '.autoloop/programs';
-      const autoloopDir = '.autoloop/programs';
-      const templateFile = path.join(autoloopDir, 'example.md');
-
-      // Read program state from repo-memory (persistent git-backed storage)
-      const githubToken = process.env.GITHUB_TOKEN || '';
-      const repo = process.env.GITHUB_REPOSITORY || '';
-      const forcedProgram = (process.env.AUTOLOOP_PROGRAM || '').trim();
-
-      // Repo-memory files are cloned to /tmp/gh-aw/repo-memory/{id}/ where {id}
-      // is derived from the branch-name configured in the tools section (memory/autoloop -> autoloop)
-      const repoMemoryDir = '/tmp/gh-aw/repo-memory/autoloop';
-
-      function parseMachineState(content) {
-          const state = {};
-          const sectionMatch = content.match(/## ⚙️ Machine State[^\n]*\n([\s\S]*?)(?=\n## |$)/);
-          if (!sectionMatch) return state;
-          const section = sectionMatch[0];
-          const rowRegex = /\|\s*(.+?)\s*\|\s*(.+?)\s*\|/g;
-          let row;
-          while ((row = rowRegex.exec(section)) !== null) {
-              const rawKey = row[1].trim();
-              const rawVal = row[2].trim();
-              if (['field', '---', ':---', ':---:', '---:'].includes(rawKey.toLowerCase())) continue;
-              const key = rawKey.toLowerCase().replace(/ /g, '_');
-              const val = ['\u2014', '-', ''].includes(rawVal) ? null : rawVal; // \u2014 = em dash
-              state[key] = val;
-          }
-          // Coerce types
-          for (const intField of ['iteration_count', 'consecutive_errors']) {
-              if (intField in state) {
-                  const n = parseInt(state[intField], 10);
-                  state[intField] = isNaN(n) ? 0 : n;
-              }
-          }
-          if ('paused' in state) {
-              state.paused = String(state.paused || '').toLowerCase() === 'true';
-          }
-          if ('completed' in state) {
-              state.completed = String(state.completed || '').toLowerCase() === 'true';
-          }
-          // recent_statuses: stored as comma-separated words (e.g. "accepted, rejected, error")
-          const rsRaw = state.recent_statuses || '';
-          if (rsRaw) {
-              state.recent_statuses = rsRaw.split(',').map(s => s.trim().toLowerCase()).filter(s => s);
-          } else {
-              state.recent_statuses = [];
-          }
-          return state;
-      }
-
-      function readProgramState(programName) {
-          const stateFile = path.join(repoMemoryDir, programName + '.md');
-          try {
-              if (!fs.statSync(stateFile).isFile()) {
-                  console.log('  ' + programName + ': no state file found (first run)');
-                  return {};
-              }
-          } catch (e) {
-              console.log('  ' + programName + ': no state file found (first run)');
-              return {};
-          }
-          const content = fs.readFileSync(stateFile, 'utf-8');
-          return parseMachineState(content);
-      }
-
-      // Schedule string to milliseconds
-      function parseSchedule(s) {
-          s = s.trim().toLowerCase();
-          let m = s.match(/^every\s+(\d+)\s*h/);
-          if (m) return parseInt(m[1], 10) * 3600 * 1000;
-          m = s.match(/^every\s+(\d+)\s*m/);
-          if (m) return parseInt(m[1], 10) * 60 * 1000;
-          if (s === 'daily') return 24 * 3600 * 1000;
-          if (s === 'weekly') return 7 * 24 * 3600 * 1000;
-          return null;
-      }
-
-      function getProgramName(pf) {
-          // Extract program name from file path.
-          // Directory-based: .autoloop/programs/<name>/program.md -> <name>
-          // Bare markdown: .autoloop/programs/<name>.md -> <name>
-          // Issue-based: /tmp/gh-aw/issue-programs/<name>.md -> <name>
-          if (pf.endsWith('/program.md')) {
-              return path.basename(path.dirname(pf));
-          } else {
-              return path.parse(pf).name;
-          }
-      }
-
-      // Parse the GitHub API Link header to extract the "next" page URL.
-      // Returns the URL string for the next page, or null if there is none.
-      function parseLinkHeader(header) {
-          if (!header) return null;
-          var parts = header.split(',');
-          for (var i = 0; i < parts.length; i++) {
-              var section = parts[i].trim();
-              var m = section.match(/^<([^>]+)>;\s*rel="next"$/);
-              if (m) return m[1];
-          }
-          return null;
-      }
-
-      // Main execution
-      async function main() {
-          // Bootstrap: create autoloop programs directory and template if missing
-          if (!fs.existsSync(autoloopDir)) {
-              fs.mkdirSync(autoloopDir, { recursive: true });
-              const bt = String.fromCharCode(96); // backtick -- avoid literal backticks that break gh-aw compiler
-              const template = [
-                  '<!-- AUTOLOOP:UNCONFIGURED -->',
-                  '<!-- Remove the line above once you have filled in your program. -->',
-                  '<!-- Autoloop will NOT run until you do. -->',
-                  '',
-                  '# Autoloop Program',
-                  '',
-                  '<!-- Rename this file to something meaningful (e.g. training.md, coverage.md).',
-                  '     The filename (minus .md) becomes the program name used in issues, PRs,',
-                  '     and slash commands. Want multiple loops? Add more .md files here. -->',
-                  '',
-                  '## Goal',
-                  '',
-                  "<!-- Describe what you want to optimize. Be specific about what 'better' means. -->",
-                  '',
-                  'REPLACE THIS with your optimization goal.',
-                  '',
-                  '## Target',
-                  '',
-                  '<!-- List files Autoloop may modify. Everything else is off-limits. -->',
-                  '',
-                  'Only modify these files:',
-                  '- ' + bt + 'REPLACE_WITH_FILE' + bt + ' -- (describe what this file does)',
-                  '',
-                  'Do NOT modify:',
-                  '- (list files that must not be touched)',
-                  '',
-                  '## Evaluation',
-                  '',
-                  '<!-- Provide a command and the metric to extract. -->',
-                  '',
-                  bt + bt + bt + 'bash',
-                  'REPLACE_WITH_YOUR_EVALUATION_COMMAND',
-                  bt + bt + bt,
-                  '',
-                  'The metric is ' + bt + 'REPLACE_WITH_METRIC_NAME' + bt + '. **Lower/Higher is better.** (pick one)',
-                  '',
-              ].join('\n');
-              fs.writeFileSync(templateFile, template);
-              console.log('BOOTSTRAPPED: created ' + templateFile + ' locally (agent will create a draft PR)');
-          }
-
-          // Find all program files from all locations:
-          // 1. Directory-based programs: .autoloop/programs/<name>/program.md (preferred)
-          // 2. Bare markdown programs: .autoloop/programs/<name>.md (simple)
-          // 3. Issue-based programs: GitHub issues with the 'autoloop-program' label
-          let programFiles = [];
-          const issuePrograms = {};
-
-          // Scan .autoloop/programs/ for directory-based programs
-          if (fs.existsSync(programsDir)) {
-              try {
-                  if (fs.statSync(programsDir).isDirectory()) {
-                      const entries = fs.readdirSync(programsDir).sort();
-                      for (const entry of entries) {
-                          const progDir = path.join(programsDir, entry);
-                          try {
-                              if (fs.statSync(progDir).isDirectory()) {
-                                  const progFile = path.join(progDir, 'program.md');
-                                  try {
-                                      if (fs.statSync(progFile).isFile()) {
-                                          programFiles.push(progFile);
-                                      }
-                                  } catch (e) { /* file doesn't exist */ }
-                              }
-                          } catch (e) { /* stat failed */ }
-                      }
-                  }
-              } catch (e) { /* stat failed */ }
-          }
-
-          // Scan .autoloop/programs/ for bare markdown programs
-          if (fs.existsSync(autoloopDir)) {
-              try {
-                  if (fs.statSync(autoloopDir).isDirectory()) {
-                      const barePrograms = fs.readdirSync(autoloopDir)
-                          .filter(f => f.endsWith('.md'))
-                          .sort()
-                          .map(f => path.join(autoloopDir, f));
-                      for (const pf of barePrograms) {
-                          programFiles.push(pf);
-                      }
-                  }
-              } catch (e) { /* stat failed */ }
-          }
-
-          // Scan GitHub issues with the 'autoloop-program' label (paginated)
-          const issueProgramsDir = '/tmp/gh-aw/issue-programs';
-          fs.mkdirSync(issueProgramsDir, { recursive: true });
-          try {
-              let nextUrl = 'https://api.github.com/repos/' + repo + '/issues?labels=autoloop-program&state=open&per_page=100';
-              const issues = [];
-              while (nextUrl) {
-                  const response = await fetch(nextUrl, {
-                      headers: {
-                          'Authorization': 'token ' + githubToken,
-                          'Accept': 'application/vnd.github.v3+json',
-                      },
-                  });
-                  const page = await response.json();
-                  issues.push(...page);
-                  nextUrl = parseLinkHeader(response.headers.get('link'));
-              }
-              for (const issue of issues) {
-                  if (issue.pull_request) continue; // skip PRs
-                  const body = issue.body || '';
-                  const title = issue.title || '';
-                  const number = issue.number;
-                  // Derive program name from issue title: slugify to lowercase with hyphens
-                  let slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-                  slug = slug.replace(/-+/g, '-'); // collapse consecutive hyphens
-                  if (!slug) slug = 'issue-' + number;
-                  // Avoid slug collisions: if another issue already claimed this slug, append issue number
-                  if (slug in issuePrograms) {
-                      console.log("  Warning: slug '" + slug + "' (issue #" + number + ") collides with issue #" + issuePrograms[slug].issue_number + ", appending issue number");
-                      slug = slug + '-' + number;
-                  }
-                  // Write issue body to a temp file so the scheduling loop can process it
-                  const issueFile = path.join(issueProgramsDir, slug + '.md');
-                  fs.writeFileSync(issueFile, body);
-                  programFiles.push(issueFile);
-                  issuePrograms[slug] = { issue_number: number, file: issueFile, title: title };
-                  console.log("  Found issue-based program: '" + slug + "' (issue #" + number + ")");
-              }
-          } catch (e) {
-              console.log('  Warning: could not fetch issue-based programs: ' + e.message);
-          }
-
-          if (programFiles.length === 0) {
-              // Fallback to single-file locations
-              for (const p of ['.autoloop/program.md', 'program.md']) {
-                  try {
-                      if (fs.statSync(p).isFile()) {
-                          programFiles = [p];
-                          break;
-                      }
-                  } catch (e) { /* file doesn't exist */ }
-              }
-          }
-
-          if (programFiles.length === 0) {
-              console.log('NO_PROGRAMS_FOUND');
-              fs.mkdirSync('/tmp/gh-aw', { recursive: true });
-              fs.writeFileSync('/tmp/gh-aw/autoloop.json', JSON.stringify(
-                  { due: [], skipped: [], unconfigured: [], no_programs: true }
-              ));
-              process.exit(0);
-          }
-
-          fs.mkdirSync('/tmp/gh-aw', { recursive: true });
-          const now = new Date();
-          const due = [];
-          const skipped = [];
-          const unconfigured = [];
-          const allPrograms = {};
-
-          for (const pf of programFiles) {
-              const name = getProgramName(pf);
-              allPrograms[name] = pf;
-              const content = fs.readFileSync(pf, 'utf-8');
-
-              // Check sentinel (skip for issue-based programs which use AUTOLOOP:ISSUE-PROGRAM)
-              if (content.includes('<!-- AUTOLOOP:UNCONFIGURED -->')) {
-                  unconfigured.push(name);
-                  continue;
-              }
-
-              // Check for TODO/REPLACE placeholders
-              if (/\bTODO\b|\bREPLACE/.test(content)) {
-                  unconfigured.push(name);
-                  continue;
-              }
-
-              // Parse optional YAML frontmatter for schedule and target-metric
-              // Strip leading HTML comments before checking (issue-based programs may have them)
-              const contentStripped = content.replace(/^(\s*<!--[\s\S]*?-->\s*\n)*/, '');
-              let scheduleDelta = null;
-              let targetMetric = null;
-              const fmMatch = contentStripped.match(/^---\s*\n([\s\S]*?)\n---\s*\n/);
-              if (fmMatch) {
-                  for (const line of fmMatch[1].split('\n')) {
-                      if (line.trim().startsWith('schedule:')) {
-                          const scheduleStr = line.substring(line.indexOf(':') + 1).trim();
-                          scheduleDelta = parseSchedule(scheduleStr);
-                      }
-                      if (line.trim().startsWith('target-metric:')) {
-                          const val = parseFloat(line.substring(line.indexOf(':') + 1).trim());
-                          if (!isNaN(val)) {
-                              targetMetric = val;
-                          } else {
-                              console.log('  Warning: ' + name + ' has invalid target-metric value: ' + line.substring(line.indexOf(':') + 1).trim());
-                          }
-                      }
-                  }
-              }
-
-              // Read state from repo-memory
-              const state = readProgramState(name);
-              if (state && Object.keys(state).length > 0) {
-                  console.log('  ' + name + ': last_run=' + (state.last_run || null) + ', iteration_count=' + (state.iteration_count != null ? state.iteration_count : null));
-              } else {
-                  console.log('  ' + name + ': no state found (first run)');
-              }
-
-              let lastRun = null;
-              const lr = state.last_run || null;
-              if (lr) {
-                  try {
-                      const d = new Date(lr);
-                      if (!isNaN(d.getTime())) lastRun = d;
-                  } catch (e) {
-                      // ignore invalid date
-                  }
-              }
-
-              // Check if completed (target metric was reached)
-              if (String(state.completed || '').toLowerCase() === 'true') {
-                  skipped.push({ name: name, reason: 'completed: target metric reached' });
-                  continue;
-              }
-
-              // Check if paused (e.g., plateau or recurring errors)
-              if (state.paused) {
-                  skipped.push({ name: name, reason: 'paused: ' + (state.pause_reason || 'unknown') });
-                  continue;
-              }
-
-              // Auto-pause on plateau: 5+ consecutive rejections
-              const recent = (state.recent_statuses || []).slice(-5);
-              if (recent.length >= 5 && recent.every(s => s === 'rejected')) {
-                  skipped.push({ name: name, reason: 'plateau: 5 consecutive rejections' });
-                  continue;
-              }
-
-              // Check if due based on per-program schedule
-              if (scheduleDelta && lastRun) {
-                  if (now.getTime() - lastRun.getTime() < scheduleDelta) {
-                      skipped.push({
-                          name: name,
-                          reason: 'not due yet',
-                          next_due: new Date(lastRun.getTime() + scheduleDelta).toISOString(),
-                      });
-                      continue;
-                  }
-              }
-
-              due.push({ name: name, last_run: lr, file: pf, target_metric: targetMetric });
-          }
-
-          // Pick the program to run
-          let selected = null;
-          let selectedFile = null;
-          let selectedIssue = null;
-          let selectedTargetMetric = null;
-          let deferred = [];
-
-          if (forcedProgram) {
-              // Manual dispatch requested a specific program -- bypass scheduling
-              // (paused, not-due, and plateau programs can still be forced)
-              if (!(forcedProgram in allPrograms)) {
-                  console.log("ERROR: requested program '" + forcedProgram + "' not found.");
-                  console.log('  Available programs: ' + JSON.stringify(Object.keys(allPrograms)));
-                  process.exit(1);
-              }
-              if (unconfigured.includes(forcedProgram)) {
-                  console.log("ERROR: requested program '" + forcedProgram + "' is unconfigured (has placeholders).");
-                  process.exit(1);
-              }
-              selected = forcedProgram;
-              selectedFile = allPrograms[forcedProgram];
-              deferred = due.filter(p => p.name !== forcedProgram).map(p => p.name);
-              if (selected in issuePrograms) {
-                  selectedIssue = issuePrograms[selected].issue_number;
-              }
-              // Find target_metric: check the due list first, then parse from the program file
-              for (const p of due) {
-                  if (p.name === forcedProgram) {
-                      selectedTargetMetric = p.target_metric || null;
-                      break;
-                  }
-              }
-              if (selectedTargetMetric === null) {
-                  // Program may have been skipped (completed/paused/plateau) -- parse directly
-                  try {
-                      const _content = fs.readFileSync(selectedFile, 'utf-8');
-                      const _contentStripped = _content.replace(/^(\s*<!--[\s\S]*?-->\s*\n)*/, '');
-                      const _fm = _contentStripped.match(/^---\s*\n([\s\S]*?)\n---\s*\n/);
-                      if (_fm) {
-                          for (const _line of _fm[1].split('\n')) {
-                              if (_line.trim().startsWith('target-metric:')) {
-                                  const val = parseFloat(_line.substring(_line.indexOf(':') + 1).trim());
-                                  if (!isNaN(val)) {
-                                      selectedTargetMetric = val;
-                                      break;
-                                  }
-                              }
-                          }
-                      }
-                  } catch (e) { /* ignore */ }
-              }
-              console.log("FORCED: running program '" + forcedProgram + "' (manual dispatch)");
-          } else if (due.length > 0) {
-              // Normal scheduling: pick the single most-overdue program
-              due.sort((a, b) => (a.last_run || '').localeCompare(b.last_run || '')); // null/empty sorts first (never run)
-              selected = due[0].name;
-              selectedFile = due[0].file;
-              selectedTargetMetric = due[0].target_metric || null;
-              deferred = due.slice(1).map(p => p.name);
-              // Check if the selected program is issue-based
-              if (selected in issuePrograms) {
-                  selectedIssue = issuePrograms[selected].issue_number;
-              }
-          }
-
-          const issueProgramsMap = {};
-          for (const [name, info] of Object.entries(issuePrograms)) {
-              issueProgramsMap[name] = info.issue_number;
-          }
-
-          const notDue = !selected && unconfigured.length === 0;
-          const result = {
-              selected: selected,
-              selected_file: selectedFile,
-              selected_issue: selectedIssue,
-              selected_target_metric: selectedTargetMetric,
-              issue_programs: issueProgramsMap,
-              deferred: deferred,
-              skipped: skipped,
-              unconfigured: unconfigured,
-              no_programs: false,
-              not_due: notDue,
-          };
-
-          fs.mkdirSync('/tmp/gh-aw', { recursive: true });
-          fs.writeFileSync('/tmp/gh-aw/autoloop.json', JSON.stringify(result, null, 2));
-
-          console.log('=== Autoloop Program Check ===');
-          console.log('Selected program:      ' + (selected || '(none)') + ' (' + (selectedFile || 'n/a') + ')');
-          console.log('Deferred (next run):   ' + (deferred.length > 0 ? JSON.stringify(deferred) : '(none)'));
-          console.log('Programs skipped:      ' + (skipped.length > 0 ? JSON.stringify(skipped.map(s => s.name)) : '(none)'));
-          console.log('Programs unconfigured: ' + (unconfigured.length > 0 ? JSON.stringify(unconfigured) : '(none)'));
-
-          if (!selected && unconfigured.length === 0) {
-              console.log('\nNo programs due this run. Exiting early.');
-              process.exit(0);
-          }
-      }
-
-      main().catch(err => { console.error(err.message || err); process.exit(1); });
-      JSEOF
+      python3 .github/workflows/scripts/autoloop_scheduler.py
 
 source: githubnext/autoloop
 engine: copilot
@@ -687,7 +225,7 @@ GitHub Issues (labeled 'autoloop-program'):
 Each program runs independently with its own:
 - Goal, target files, and evaluation command
 - Metric tracking and best-metric history
-- Steering issue: `[Autoloop: {program-name}] Steering` (persistent, links branch/PR/state)
+- Program issue: `[Autoloop: {program-name}]` (a single GitHub issue labeled `autoloop-program` — created automatically for file-based programs, the source issue for issue-based programs — that hosts the status comment, per-iteration comments, and human steering)
 - Long-running branch: `autoloop/{program-name}` (persists across iterations)
 - Single draft PR per program: `[Autoloop: {program-name}]` (accumulates all accepted iterations)
 - State file: `{program-name}.md` in repo-memory (all state: scheduling, research context, iteration history)
@@ -773,10 +311,10 @@ Examples:
 
 Each program has three coordinated resources:
 - **Branch + PR**: `autoloop/{program-name}` with a single draft PR
-- **Steering Issue**: `[Autoloop: {program-name}] Steering` — persistent GitHub issue linking branch, PR, and state
+- **Program Issue**: `[Autoloop: {program-name}]` — a single GitHub issue (labeled `autoloop-program`) that hosts the status comment, per-iteration comments, and human steering. For issue-based programs this is the source issue. For file-based programs it is auto-created on the first run.
 - **State File**: `{program-name}.md` in repo-memory — all state, history, and research context
 
-All three reference each other. The steering issue is created on the first accepted iteration and updated with links to the PR and state.
+All three reference each other. The program issue is created (or, for issue-based programs, adopted) on the first run and updated with links to the PR and state.
 
 ## Iteration Loop
 
@@ -879,16 +417,16 @@ If `status == "failure"`, **fix and retry — do not revert, do not accept**:
 1. The commit(s) are already on the long-running branch (pushed in Step 5a / 5b). No further pushing needed.
 2. If a draft PR does not already exist for this branch, create one:
    - Title: `[Autoloop: {program-name}]`
-   - Body includes: a summary of the program goal, link to the steering issue, the current best metric, and AI disclosure: `🤖 *This PR is maintained by Autoloop. Each accepted iteration adds a commit to this branch.*`
+   - Body includes: a summary of the program goal, link to the program issue, the current best metric, and AI disclosure: `🤖 *This PR is maintained by Autoloop. Each accepted iteration adds a commit to this branch.*`
    If a draft PR already exists, update the PR body with the latest metric and a summary of the most recent accepted iteration. Add a comment to the PR summarizing the iteration: what changed, old metric, new metric, improvement delta, the **fix-attempt count** if `> 0`, and a link to the actions run.
-3. Ensure the steering issue exists (see [Steering Issue](#steering-issue) below). Add a comment to the steering issue linking to the commit and actions run.
-4. Update the state file `{program-name}.md` in the repo-memory folder:
+4. Ensure the program issue exists (see [Program Issue](#program-issue) below) — for file-based programs that have no program issue yet (`selected_issue` is null in `/tmp/gh-aw/autoloop.json`), create one and record its number in the state file's `Issue` field.
+5. Update the state file `{program-name}.md` in the repo-memory folder:
    - Update the **⚙️ Machine State** table: reset `consecutive_errors` to 0, set `best_metric`, increment `iteration_count`, set `last_run` to current UTC timestamp, append `"accepted"` to `recent_statuses` (keep last 10), set `paused` to false.
    - Prepend an entry to **📊 Iteration History** (newest first) with status ✅, metric, PR link, the fix-attempt count if `> 0`, and a one-line summary of what changed and why it worked.
    - Update **📚 Lessons Learned** if this iteration revealed something new about the problem or what works.
    - Update **🔭 Future Directions** if this iteration opened new promising paths.
-5. **If this is an issue-based program** (`selected_issue` is not null): update the status comment and post a per-run comment on the source issue (see [Issue-Based Program Updates](#issue-based-program-updates)). Note the fix-attempt count in the per-run comment if `> 0`.
-6. **Check halting condition** (see [Halting Condition](#halting-condition)): If the program has a `target-metric` in its frontmatter and the new `best_metric` meets or surpasses the target, mark the program as completed.
+6. **Update the program issue**: edit the status comment and post a per-iteration comment on the program issue (see [Program Issue](#program-issue)). Note the fix-attempt count in the per-iteration comment if `> 0`.
+7. **Check halting condition** (see [Halting Condition](#halting-condition)): If the program has a `target-metric` in its frontmatter and the new `best_metric` meets or surpasses the target, mark the program as completed.
 
 #### Coordination with PR-health-keeper workflows
 
@@ -901,7 +439,7 @@ If a repo ships a companion PR-health-keeper workflow (e.g., an "Evergreen" work
    - Prepend an entry to **📊 Iteration History** with status ❌, metric, and a one-line summary of what was tried.
    - If this approach is conclusively ruled out (e.g., tried multiple variations and all fail), add it to **🚧 Foreclosed Avenues** with a clear explanation.
    - Update **🔭 Future Directions** if this rejection clarified what to try next.
-3. **If this is an issue-based program** (`selected_issue` is not null): update the status comment and post a per-run comment on the source issue (see [Issue-Based Program Updates](#issue-based-program-updates)).
+3. **Update the program issue**: edit the status comment and post a per-iteration comment on the program issue (see [Program Issue](#program-issue)).
 
 **If evaluation could not run** (build failure, missing dependencies, etc.):
 1. Discard the code changes (do not commit them to the long-running branch).
@@ -909,50 +447,33 @@ If a repo ships a companion PR-health-keeper workflow (e.g., an "Evergreen" work
    - Update the **⚙️ Machine State** table: increment `consecutive_errors`, increment `iteration_count`, set `last_run`, append `"error"` to `recent_statuses` (keep last 10).
    - If `consecutive_errors` reaches 3+, set `paused` to `true` and set `pause_reason` in the Machine State table, and create an issue describing the problem.
    - Prepend an entry to **📊 Iteration History** with status ⚠️ and a brief error description.
-3. **If this is an issue-based program** (`selected_issue` is not null): update the status comment and post a per-run comment on the source issue (see [Issue-Based Program Updates](#issue-based-program-updates)).
+3. **Update the program issue**: edit the status comment and post a per-iteration comment on the program issue (see [Program Issue](#program-issue)).
 
-## Steering Issue
+## Program Issue
 
-Maintain a single **persistent** open issue per program titled `[Autoloop: {program-name}] Steering`. The steering issue lives for the entire lifetime of the program.
+Each program has **exactly one** open GitHub issue (labeled `autoloop-program`) titled `[Autoloop: {program-name}]`. This single issue is the source of truth for the program — it hosts:
 
-The steering issue serves as the central coordination point linking together the program's key resources:
-- The **long-running branch** `autoloop/{program-name}` and its draft PR
-- The **state file** `{program-name}.md` in repo-memory (on the `memory/autoloop` branch)
+- The **status comment** (the earliest bot comment, edited in place each iteration) — a dashboard of current state.
+- A **per-iteration comment** for every iteration (accepted, rejected, or error) — the rolling log.
+- **Human steering comments** — plain-prose comments from maintainers, treated by the agent as directives.
 
-### Steering Issue Body Format
+There are no separate "steering" or "experiment log" issues — they have all been collapsed into this one issue.
 
-```markdown
-🤖 *Autoloop — steering issue for the `{program-name}` program.*
+### Auto-Creation for File-Based Programs
 
-## Links
+If `selected_issue` is `null` in `/tmp/gh-aw/autoloop.json`, the program is file-based **and** has no program issue yet. On the first run, create one with `create-issue`:
 
-- **Branch**: [`autoloop/{program-name}`](https://github.com/{owner}/{repo}/tree/autoloop/{program-name})
-- **Pull Request**: #{pr_number}
-- **State File**: [`{program-name}.md`](https://github.com/{owner}/{repo}/blob/memory/autoloop/{program-name}.md)
+- **Title**: `[Autoloop: {program-name}]` (the `[Autoloop] ` prefix is added automatically by the safe-output `title-prefix`, so pass the title as `{program-name}`).
+- **Body**: the contents of the program file (`program.md`) plus a placeholder for the status comment so maintainers know one will be edited in place.
+- **Labels**: `[autoloop-program, automation, autoloop]`.
 
-## Program
+Record the new issue number in the state file's `Issue` field. On subsequent runs, the pre-step will discover the existing program issue (it scans open issues with the `autoloop-program` label) and `selected_issue` will be populated automatically.
 
-**Goal**: {one-line summary from program.md}
-**Metric**: {metric-name} ({higher/lower} is better)
-**Current best**: {best_metric}
-**Iterations**: {iteration_count}
-```
-
-### Steering Issue Rules
-
-- Create the steering issue on the **first accepted iteration** for the program if it does not already exist.
-- **Update the issue body** whenever the best metric or PR number changes.
-- **Add a comment** on each accepted iteration with a link to the commit and actions run.
-- The steering issue is labeled `[automation, autoloop]`.
-- Do NOT close the steering issue when the PR is merged — the branch continues to accumulate future iterations.
-
-## Issue-Based Program Updates
-
-When a program is defined via a GitHub issue (i.e., `selected_issue` is not null in `/tmp/gh-aw/autoloop.json`), the source issue itself serves as the program definition **and** as the primary interface for steering and monitoring the program. In addition to the normal iteration workflow (state file, steering issue, PR), you must also update the source issue.
+For issue-based programs (`selected_issue` is not null on the very first run), no creation is needed — the source issue is already the program issue. The flow below is identical from there on.
 
 ### Status Comment
 
-On the **first iteration** for an issue-based program, post a comment on the source issue. On **every subsequent iteration**, update that same comment (edit it, do not post a new one). This is the "status comment" — always the earliest bot comment on the issue.
+On the **first iteration**, post a comment on the program issue. On **every subsequent iteration**, update that same comment (edit it, do not post a new one). This is the "status comment" — always the earliest bot comment on the issue.
 
 Find the status comment by searching for a comment containing `<!-- AUTOLOOP:STATUS -->`. If multiple comments contain this sentinel, use the earliest one (lowest comment ID) and ignore the others.
 
@@ -972,16 +493,16 @@ Find the status comment by searching for a comment containing `<!-- AUTOLOOP:STA
 | **Branch** | [`autoloop/{program-name}`](https://github.com/{owner}/{repo}/tree/autoloop/{program-name}) |
 | **Pull Request** | #{pr_number} |
 | **State File** | [`{program-name}.md`](https://github.com/{owner}/{repo}/blob/memory/autoloop/{program-name}.md) |
-| **Steering Issue** | #{steering_issue_number} |
+| **Paused** | {true/false} ({pause_reason if paused}) |
 
 ### Summary
 
 {2-3 sentence summary of current state: what has been accomplished so far, what the current best approach is, and what direction the next iteration will likely take.}
 ```
 
-### Per-Run Comment
+### Per-Iteration Comment
 
-After **every iteration** (accepted, rejected, or error), post a **new comment** on the source issue with a summary of what happened:
+After **every iteration** (accepted, rejected, or error), post a **new comment** on the program issue with a summary of what happened:
 
 ```markdown
 🤖 **Iteration {N}** — [{status_emoji} {status}]({run_url})
@@ -994,15 +515,23 @@ After **every iteration** (accepted, rejected, or error), post a **new comment**
 
 ### Steering via Issue Comments
 
-For issue-based programs, **human comments on the source issue act as steering input** (in addition to the state file's Current Priorities section). Before proposing a change, read all comments on the source issue and treat any human comments as directives — similar to how the Current Priorities section works in the state file.
+**Human comments on the program issue act as steering input** (in addition to the state file's Current Priorities section). Before proposing a change, read all comments on the program issue and treat any human (non-bot) comments posted since the last iteration as directives — similar to how the Current Priorities section works in the state file.
 
-### Issue-Based Program Rules
+### Program Issue Rules
 
-- The source issue body IS the program definition — do not modify it (the user owns it).
+- For issue-based programs, the source issue body IS the program definition — do not modify it (the user owns it).
+- For file-based programs, the program issue body is informational and may be lightly updated (e.g., to refresh the program summary), but the program file (`program.md`) remains the source of truth for the goal/target/evaluation.
 - The `autoloop-program` label must remain on the issue for the program to be discovered. When a program completes (target metric reached), the label is removed automatically and replaced with `autoloop-completed`.
-- Closing the issue stops the program from being discovered (equivalent to deleting a program.md file).
-- Issue-based programs use the same branching model, state files, and steering issue as file-based programs.
-- For issue-based programs, the steering issue is optional — the source issue itself serves a similar coordination role. However, if the program grows complex, a separate steering issue may still be created.
+- Closing the program issue stops the program from being discovered (equivalent to deleting a program file). Do NOT close the program issue when the PR is merged — the branch continues to accumulate future iterations.
+- Program issues are labeled `[autoloop-program, automation, autoloop]`.
+
+### Migration from the Old Three-Issue Model
+
+Older Autoloop installations created up to three issues per program: the program issue (issue-based only), a separate `[Autoloop: {name}] Steering` issue, and monthly `[Autoloop: {name}] Experiment Log` issues. These have been collapsed into the single program issue described above.
+
+- Before creating a new program issue for a file-based program, check whether one with the title `[Autoloop: {program-name}]` already exists (open or closed). If found and open, adopt it; if closed, reopen it rather than creating a new one.
+- Existing `Steering` and monthly `Experiment Log` issues can be manually closed by maintainers; the agent must stop posting to them.
+- The state file's legacy `Steering Issue` field is deprecated; the new `Issue` field replaces it. If only the legacy field is present, copy its value into the new `Issue` field on the next iteration.
 
 ## Halting Condition
 
@@ -1023,7 +552,7 @@ Programs can be **open-ended** (run indefinitely until manually stopped) or **go
      - Add the `autoloop-completed` label to the source issue.
    - Update the status comment to show ✅ Completed status.
    - Post a per-run comment celebrating the achievement: `🎉 **Target metric reached!** The program has achieved its goal.`
-   - Add a comment on the steering issue (if one exists) noting the completion.
+   - Post a per-iteration comment on the program issue noting the completion.
    - The program will not be selected for future runs (the pre-step skips completed programs).
 
 ### Example
@@ -1112,7 +641,7 @@ When creating or updating a program's state file in the repo-memory folder, use 
 | Target Metric | — |
 | Branch | `autoloop/{program-name}` |
 | PR | — |
-| Steering Issue | — |
+| Issue | — |
 | Paused | false |
 | Pause Reason | — |
 | Completed | false |
@@ -1128,7 +657,7 @@ When creating or updating a program's state file in the repo-memory folder, use 
 **Metric**: {metric-name} ({higher/lower} is better)
 **Branch**: [`autoloop/{program-name}`](../../tree/autoloop/{program-name})
 **Pull Request**: #{pr_number}
-**Steering Issue**: #{steering_issue_number}
+**Issue**: #{issue_number}
 
 ---
 
@@ -1183,7 +712,7 @@ All iterations in reverse chronological order (newest first).
 | Target Metric | number or `—` | Target metric from program frontmatter (halting condition). `—` if open-ended |
 | Branch | branch name | Long-running branch: `autoloop/{program-name}` |
 | PR | `#number` or `—` | Draft PR number for this program |
-| Steering Issue | `#number` or `—` | Steering issue number for this program |
+| Issue | `#number` or `—` | The single program issue (`[Autoloop: {program-name}]`) for this program. Hosts the status comment, per-iteration comments, and human steering comments. |
 | Paused | `true` or `false` | Whether the program is paused |
 | Pause Reason | text or `—` | Why it is paused (if applicable). Common values include `manual`, `consecutive errors`, `ci-fix-exhausted: <signature>` (5 fix attempts didn't fix CI), `stuck in CI fix loop: <signature>` (no-progress guard tripped — same failure signature twice in a row), and `ci-timeout` (60-min wall-clock cap hit). |
 | Completed | `true` or `false` | Whether the program has reached its target metric |

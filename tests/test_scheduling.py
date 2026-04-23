@@ -1,131 +1,55 @@
-"""Tests for the scheduling pre-step in workflows/autoloop.md.
+"""Tests for the standalone Autoloop scheduler.
 
-Functions are extracted directly from the workflow JavaScript heredoc at import
-time (see conftest.py) and called via Node.js subprocess — there is no separate
-copy of the scheduling code.
-
-For inline logic (slugify, frontmatter parsing, skip conditions, etc.) that
-isn't wrapped in a named function in the workflow, we write thin test helpers
-that replicate the exact inline pattern. These are documented with the
-workflow source patterns they correspond to.
+The scheduler module is imported directly (see ``conftest.py``); functions are
+exercised in-process. A few thin helpers below match the legacy 2-tuple/no-args
+shapes used by the tests, while delegating to the shared scheduler module.
 """
 
 import re
 from datetime import datetime, timezone, timedelta
-from conftest import _funcs
+from conftest import _funcs, autoloop_scheduler
 
 # ---------------------------------------------------------------------------
-# Functions extracted from the workflow via AST (see conftest.py)
+# Functions exposed by the scheduler module
 # ---------------------------------------------------------------------------
 parse_schedule = _funcs["parse_schedule"]
 parse_machine_state = _funcs["parse_machine_state"]
 get_program_name = _funcs["get_program_name"]
 parse_link_header = _funcs["parse_link_header"]
+is_unconfigured = autoloop_scheduler.is_unconfigured
+check_skip_conditions = autoloop_scheduler.check_skip_conditions
+select_program = autoloop_scheduler.select_program
 
 
 # ---------------------------------------------------------------------------
-# Thin helpers that replicate inline workflow patterns (not function defs).
-# Each documents the workflow source lines it mirrors.
+# Thin helpers preserving the legacy test-helper shapes.
 # ---------------------------------------------------------------------------
 
 def slugify_issue_title(title):
-    """Replicates the inline slug logic in the workflow's issue scanning section."""
-    slug = re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-')
+    """Slugify a title (the workflow's inline issue-scanning slug logic).
+
+    The scheduler module's ``slugify_issue_title`` falls back to ``"issue"``
+    when no number is provided and the title slugifies to empty; the original
+    inline workflow code only fell back when ``number`` was known. This helper
+    preserves the original behaviour by passing through an empty string.
+    """
+    slug = re.sub(r'[^a-z0-9]+', '-', (title or '').lower()).strip('-')
     slug = re.sub(r'-+', '-', slug)
     return slug
 
 
 def parse_frontmatter(content):
-    """Replicates the inline frontmatter parsing in the workflow's program scanning loop."""
-    content_stripped = re.sub(r'^(\s*<!--.*?-->\s*\n)*', '', content, flags=re.DOTALL)
-    schedule_delta = None
-    target_metric = None
-    fm_match = re.match(r"^---\s*\n(.*?)\n---\s*\n", content_stripped, re.DOTALL)
-    if fm_match:
-        for line in fm_match.group(1).split("\n"):
-            if line.strip().startswith("schedule:"):
-                schedule_str = line.split(":", 1)[1].strip()
-                schedule_delta = parse_schedule(schedule_str)
-            if line.strip().startswith("target-metric:"):
-                try:
-                    target_metric = float(line.split(":", 1)[1].strip())
-                except (ValueError, TypeError):
-                    pass
+    """Two-tuple wrapper over the scheduler's three-tuple frontmatter parser."""
+    schedule_delta, target_metric, _ = autoloop_scheduler.parse_program_frontmatter(content)
     return schedule_delta, target_metric
 
 
-def is_unconfigured(content):
-    """Replicates the inline unconfigured check in the workflow's program scanning loop."""
-    if "<!-- AUTOLOOP:UNCONFIGURED -->" in content:
-        return True
-    if re.search(r'\bTODO\b|\bREPLACE', content):
-        return True
-    return False
-
-
-def check_skip_conditions(state):
-    """Replicates the inline skip logic in the workflow's program scanning loop.
-
-    Returns (should_skip, reason).
-    """
-    # Line 348: completed check
-    if str(state.get("completed", "")).lower() == "true" or state.get("completed") is True:
-        return True, "completed: target metric reached"
-    # Line 353: paused check
-    if state.get("paused"):
-        return True, f"paused: {state.get('pause_reason', 'unknown')}"
-    # Lines 357-361: plateau check
-    recent = state.get("recent_statuses", [])[-5:]
-    if len(recent) >= 5 and all(s == "rejected" for s in recent):
-        return True, "plateau: 5 consecutive rejections"
-    return False, None
-
-
 def check_if_due(schedule_delta, last_run, now):
-    """Replicates the inline due check in the workflow's program scanning loop.
-
-    Returns (is_due, next_due_iso).
-    """
+    """Replicates the inline due check: ``(is_due, next_due_iso_or_None)``."""
     if schedule_delta and last_run:
         if now - last_run < schedule_delta:
             return False, (last_run + schedule_delta).isoformat()
     return True, None
-
-
-def select_program(due, forced_program=None, all_programs=None, unconfigured=None, issue_programs=None):
-    """Replicates the selection logic in the workflow's program selection section.
-
-    Returns (selected, selected_file, selected_issue, selected_target_metric, deferred, error).
-    """
-    all_programs = all_programs or {}
-    unconfigured = unconfigured or []
-    issue_programs = issue_programs or {}
-
-    if forced_program:
-        if forced_program not in all_programs:
-            return None, None, None, None, [], f"program '{forced_program}' not found"
-        if forced_program in unconfigured:
-            return None, None, None, None, [], f"program '{forced_program}' is unconfigured"
-        selected = forced_program
-        selected_file = all_programs[forced_program]
-        deferred = [p["name"] for p in due if p["name"] != forced_program]
-        selected_issue = issue_programs.get(selected)
-        selected_target_metric = None
-        for p in due:
-            if p["name"] == forced_program:
-                selected_target_metric = p.get("target_metric")
-                break
-        return selected, selected_file, selected_issue, selected_target_metric, deferred, None
-    elif due:
-        due.sort(key=lambda p: p["last_run"] or "")
-        selected = due[0]["name"]
-        selected_file = due[0]["file"]
-        selected_target_metric = due[0].get("target_metric")
-        deferred = [p["name"] for p in due[1:]]
-        selected_issue = issue_programs.get(selected)
-        return selected, selected_file, selected_issue, selected_target_metric, deferred, None
-
-    return None, None, None, None, [], None
 
 
 # ===========================================================================
@@ -617,7 +541,7 @@ class TestSelectProgram:
     def test_forced_issue_program(self):
         due = []
         all_progs = {"my-issue": "/tmp/gh-aw/issue-programs/my-issue.md"}
-        issue_progs = {"my-issue": 42}
+        issue_progs = {"my-issue": {"issue_number": 42, "file": "/tmp/x", "title": "X"}}
         selected, file, issue, target, deferred, err = select_program(
             due, forced_program="my-issue", all_programs=all_progs, issue_programs=issue_progs
         )
@@ -628,7 +552,7 @@ class TestSelectProgram:
         due = [
             {"name": "my-issue", "last_run": None, "file": "/tmp/my-issue.md", "target_metric": None},
         ]
-        issue_progs = {"my-issue": 7}
+        issue_progs = {"my-issue": {"issue_number": 7, "file": "/tmp/x", "title": "X"}}
         selected, file, issue, target, deferred, err = select_program(
             due, issue_programs=issue_progs
         )
