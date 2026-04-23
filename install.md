@@ -85,10 +85,9 @@ rm -rf /tmp/autoloop
 
 ```bash
 gh aw compile autoloop
-gh aw compile sync-branches
 ```
 
-**What this does**: Generates `.github/workflows/autoloop.lock.yml` and `.github/workflows/sync-branches.lock.yml` from the workflow definitions.
+**What this does**: Generates `.github/workflows/autoloop.lock.yml` from the workflow definition.
 
 ## Step 5: Create a Branch, Commit, and Open a Pull Request
 
@@ -141,7 +140,7 @@ Optionally, you may copy existing examples from the [`.autoloop/programs/`](.aut
 
 ### Compile fails
 
-- Ensure `.github/workflows/autoloop.md` and `.github/workflows/sync-branches.md` exist
+- Ensure `.github/workflows/autoloop.md` exists
 - Ensure `.github/workflows/shared/` directory was copied
 - Re-run `gh aw compile autoloop` with `--verbose` for details
 
