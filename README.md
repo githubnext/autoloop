@@ -171,7 +171,6 @@ The command is handled by the `autoloop` Agentic Workflow — it is **not** a Gi
 autoloop/
 ├── workflows/                         ← Agentic Workflow definitions
 │   ├── autoloop.md                    ← the workflow (compiled by gh aw)
-│   ├── sync-branches.md               ← syncs default branch into autoloop/* branches
 │   └── shared/
 │       └── reporting.md
 ├── .autoloop/

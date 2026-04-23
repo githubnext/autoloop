@@ -11,7 +11,6 @@ autoloop/
 ├── AGENTS.md                          ← you are here
 ├── workflows/                         ← Agentic Workflow definitions
 │   ├── autoloop.md                    ← main autoloop workflow (compiled by gh-aw)
-│   ├── sync-branches.md               ← syncs default branch into autoloop/* branches
 │   ├── shared/                        ← shared workflow fragments
 │   │   └── reporting.md
 │   └── scripts/                       ← standalone scripts invoked from steps
@@ -72,7 +71,7 @@ The workflow (`workflows/autoloop.md`) is compiled by `gh aw compile` into `.git
 6. Updates the program's state file in repo-memory with all state (Machine State table + research sections)
 7. If the program has a `target-metric` and the metric is reached, marks it as completed (removes `autoloop-program` label, adds `autoloop-completed` label for issue-based programs)
 
-A companion workflow (`workflows/sync-branches.md`) runs on every push to the default branch and merges it into all active `autoloop/*` program branches, keeping them up to date.
+Branch freshness is handled by the iteration loop itself: each iteration's Step 3 (in `workflows/autoloop.md`, "Iteration Loop" → step "Branch Setup") fast-forwards or merges `origin/main` into the program's `autoloop/*` branch as needed. No separate sync workflow is required.
 
 ### Evolution Strategy
 
@@ -134,9 +133,8 @@ Programs run on a schedule, but can also be triggered manually:
 To deploy the workflow to a repository:
 
 1. Copy `workflows/autoloop.md` to `.github/workflows/autoloop.md` in the target repo
-2. Copy `workflows/sync-branches.md` to `.github/workflows/sync-branches.md` in the target repo
-3. Copy `workflows/shared/` to `.github/workflows/shared/` in the target repo
-4. Copy `workflows/scripts/` to `.github/workflows/scripts/` in the target repo
-5. Run `gh aw compile autoloop` and `gh aw compile sync-branches` to generate the lock files
-6. Copy program directories to `.autoloop/programs/` in the target repo
-7. Commit and push
+2. Copy `workflows/shared/` to `.github/workflows/shared/` in the target repo
+3. Copy `workflows/scripts/` to `.github/workflows/scripts/` in the target repo
+4. Run `gh aw compile autoloop` to generate the lock file
+5. Copy program directories to `.autoloop/programs/` in the target repo
+6. Commit and push

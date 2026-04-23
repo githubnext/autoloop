@@ -325,7 +325,6 @@ Examples:
 4. **Rejected or errored iterations** do not commit — changes are discarded.
 5. A **single draft PR** is created for the branch on the first accepted iteration. Future accepted iterations push additional commits to the same PR.
 6. The branch may be **merged into the default branch** at any time (by a maintainer or CI). After merging, the branch continues to be used for future iterations — it is never deleted while the program is active. On the next iteration, the branch is automatically reset to the default branch (see step 2) so that already-merged commits do not cause patch conflicts.
-7. A **sync workflow** automatically merges the default branch into all active `autoloop/*` branches whenever the default branch changes, keeping them up to date.
 
 ### Cross-Linking
 
