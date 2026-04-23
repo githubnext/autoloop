@@ -71,7 +71,7 @@ The workflow (`workflows/autoloop.md`) is compiled by `gh aw compile` into `.git
 6. Updates the program's state file in repo-memory with all state (Machine State table + research sections)
 7. If the program has a `target-metric` and the metric is reached, marks it as completed (removes `autoloop-program` label, adds `autoloop-completed` label for issue-based programs)
 
-Branch freshness is handled by the iteration loop itself: each iteration's Step 3 fast-forwards or merges `origin/main` into the program's `autoloop/*` branch as needed (see `workflows/autoloop.md`, "Iteration Loop"). No separate sync workflow is required.
+Branch freshness is handled by the iteration loop itself: each iteration's Step 3 (in `workflows/autoloop.md`, "Iteration Loop" → step "Branch Setup") fast-forwards or merges `origin/main` into the program's `autoloop/*` branch as needed. No separate sync workflow is required.
 
 ### Evolution Strategy
 
