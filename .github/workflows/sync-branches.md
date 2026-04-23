@@ -48,25 +48,82 @@ steps:
 
       print(f"Found {len(branches)} autoloop branch(es) to sync: {branches}")
 
+      def rev_count(range_spec):
+          r = subprocess.run(
+              ["git", "rev-list", "--count", range_spec],
+              capture_output=True, text=True
+          )
+          if r.returncode != 0:
+              return None
+          try:
+              return int(r.stdout.strip())
+          except ValueError:
+              return None
+
       failed = []
       for branch in branches:
           print(f"\n--- Syncing {branch} with {default_branch} ---")
 
-          # Fetch both branches
+          # Fetch both branches so the ahead/behind counts below are computed
+          # against up-to-date local copies of the remote tips.
           subprocess.run(["git", "fetch", "origin", branch], capture_output=True)
           subprocess.run(["git", "fetch", "origin", default_branch], capture_output=True)
 
-          # Check out the program branch
-          checkout = subprocess.run(
-              ["git", "checkout", branch],
-              capture_output=True, text=True
-          )
-          if checkout.returncode != 0:
-              # Try creating a local tracking branch
-              checkout = subprocess.run(
-                  ["git", "checkout", "-b", branch, f"origin/{branch}"],
+          # Compute ahead/behind counts using the remote-tracking refs so we
+          # make a decision based on commit delta (not content delta).
+          ahead = rev_count(f"origin/{default_branch}..origin/{branch}")
+          behind = rev_count(f"origin/{branch}..origin/{default_branch}")
+          if ahead is None or behind is None:
+              print(f"  Failed to compute ahead/behind for {branch}")
+              failed.append(branch)
+              continue
+          print(f"  ahead={ahead} behind={behind}")
+
+          if ahead == 0 and behind > 0:
+              # All of the branch's commits are already in the default branch.
+              # Merging would produce a noisy "Merge main into branch" commit
+              # that re-exposes every historical file as a patch touch — the
+              # failure mode that triggers gh-aw's E003 (>100 files) when a
+              # new PR is opened. Fast-forward the canonical branch instead.
+              # This is lossless because ahead=0 proves every commit on the
+              # branch is already reachable from the default branch.
+              ff = subprocess.run(
+                  ["git", "checkout", "-B", branch, f"origin/{default_branch}"],
                   capture_output=True, text=True
               )
+              if ff.returncode != 0:
+                  print(f"  Failed to fast-forward {branch}: {ff.stderr}")
+                  failed.append(branch)
+                  continue
+              # Use --force-with-lease so that if anyone else is simultaneously
+              # pushing to the branch, the update is rejected rather than
+              # overwriting their commits.
+              push = subprocess.run(
+                  ["git", "push", "--force-with-lease", "origin", branch],
+                  capture_output=True, text=True
+              )
+              if push.returncode != 0:
+                  print(f"  Failed to force-push {branch}: {push.stderr}")
+                  failed.append(branch)
+                  continue
+              print(f"  Fast-forwarded {branch} to origin/{default_branch}")
+              continue
+
+          if ahead == 0 and behind == 0:
+              # Already at default branch — nothing to do.
+              print(f"  {branch} is already up to date with origin/{default_branch}")
+              continue
+
+          if ahead > 0 and behind == 0:
+              # Unique work preserved; no upstream drift to merge.
+              print(f"  {branch} is ahead of origin/{default_branch} with no upstream drift; nothing to merge.")
+              continue
+
+          # True divergence (ahead > 0 and behind > 0): check out and merge.
+          checkout = subprocess.run(
+              ["git", "checkout", "-B", branch, f"origin/{branch}"],
+              capture_output=True, text=True
+          )
           if checkout.returncode != 0:
               print(f"  Failed to checkout {branch}: {checkout.stderr}")
               failed.append(branch)
