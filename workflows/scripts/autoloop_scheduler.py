@@ -155,9 +155,14 @@ def parse_link_header(header):
 
 
 def parse_program_frontmatter(content):
-    """Parse optional YAML frontmatter for ``schedule`` and ``target-metric``.
+    """Parse optional YAML frontmatter for ``schedule``, ``target-metric``, and ``metric_direction``.
 
-    Returns ``(schedule_delta, target_metric, target_metric_invalid_value)``.
+    Returns ``(schedule_delta, target_metric, target_metric_invalid_value,
+    metric_direction, metric_direction_invalid_value)``.
+
+    ``metric_direction`` is one of ``"higher"`` (default) or ``"lower"``.
+    Invalid values fall back to ``"higher"`` and the raw string is returned in
+    the fifth element so the caller can warn.
     The third element is the raw string of an invalid ``target-metric`` value
     (so the caller can warn), or ``None`` when the value parsed cleanly or was
     absent.
@@ -167,20 +172,41 @@ def parse_program_frontmatter(content):
     schedule_delta = None
     target_metric = None
     target_metric_invalid = None
+    metric_direction = "higher"
+    metric_direction_invalid = None
     fm_match = re.match(r"^---\s*\n(.*?)\n---\s*\n", content_stripped, re.DOTALL)
     if not fm_match:
-        return schedule_delta, target_metric, target_metric_invalid
+        return (
+            schedule_delta,
+            target_metric,
+            target_metric_invalid,
+            metric_direction,
+            metric_direction_invalid,
+        )
     for line in fm_match.group(1).split("\n"):
-        if line.strip().startswith("schedule:"):
+        stripped = line.strip()
+        if stripped.startswith("schedule:"):
             schedule_str = line.split(":", 1)[1].strip()
             schedule_delta = parse_schedule(schedule_str)
-        if line.strip().startswith("target-metric:"):
+        if stripped.startswith("target-metric:"):
             raw = line.split(":", 1)[1].strip()
             try:
                 target_metric = float(raw)
             except (ValueError, TypeError):
                 target_metric_invalid = raw
-    return schedule_delta, target_metric, target_metric_invalid
+        if stripped.startswith("metric_direction:") or stripped.startswith("metric-direction:"):
+            raw = line.split(":", 1)[1].strip().strip('"').strip("'").lower()
+            if raw in ("higher", "lower"):
+                metric_direction = raw
+            else:
+                metric_direction_invalid = raw
+    return (
+        schedule_delta,
+        target_metric,
+        target_metric_invalid,
+        metric_direction,
+        metric_direction_invalid,
+    )
 
 
 def is_unconfigured(content):
@@ -363,10 +389,20 @@ def _parse_target_metric_from_file(path):
     """Re-parse a program file to extract its ``target-metric``, if any."""
     try:
         with open(path) as f:
-            _, target_metric, _ = parse_program_frontmatter(f.read())
+            _, target_metric, _, _, _ = parse_program_frontmatter(f.read())
         return target_metric
     except (OSError, ValueError, TypeError):
         return None
+
+
+def _parse_metric_direction_from_file(path):
+    """Re-parse a program file to extract its ``metric_direction`` (default ``"higher"``)."""
+    try:
+        with open(path) as f:
+            _, _, _, direction, _ = parse_program_frontmatter(f.read())
+        return direction or "higher"
+    except (OSError, ValueError, TypeError):
+        return "higher"
 
 
 # ---------------------------------------------------------------------------
@@ -459,8 +495,10 @@ def select_program(due, forced_program=None, all_programs=None, unconfigured=Non
     """Pick the program to run.
 
     Returns ``(selected, selected_file, selected_issue, selected_target_metric,
-    deferred, error)``. ``error`` is a string describing why a forced selection
-    failed (and the caller should ``sys.exit(1)``); otherwise it is ``None``.
+    selected_metric_direction, deferred, error)``. ``error`` is a string describing
+    why a forced selection failed (and the caller should ``sys.exit(1)``);
+    otherwise it is ``None``. ``selected_metric_direction`` is one of
+    ``"higher"`` (default) or ``"lower"``.
     """
     all_programs = all_programs or {}
     unconfigured = unconfigured or []
@@ -468,14 +506,14 @@ def select_program(due, forced_program=None, all_programs=None, unconfigured=Non
     if forced_program:
         if forced_program not in all_programs:
             return (
-                None, None, None, None, [],
+                None, None, None, None, "higher", [],
                 "requested program '{}' not found. Available programs: {}".format(
                     forced_program, list(all_programs.keys())
                 ),
             )
         if forced_program in unconfigured:
             return (
-                None, None, None, None, [],
+                None, None, None, None, "higher", [],
                 "requested program '{}' is unconfigured (has placeholders).".format(
                     forced_program
                 ),
@@ -487,13 +525,25 @@ def select_program(due, forced_program=None, all_programs=None, unconfigured=Non
             issue_programs[selected]["issue_number"] if selected in issue_programs else None
         )
         selected_target_metric = None
+        selected_metric_direction = None
         for p in due:
             if p["name"] == forced_program:
                 selected_target_metric = p.get("target_metric")
+                selected_metric_direction = p.get("metric_direction")
                 break
         if selected_target_metric is None:
             selected_target_metric = _parse_target_metric_from_file(selected_file)
-        return selected, selected_file, selected_issue, selected_target_metric, deferred, None
+        if selected_metric_direction is None:
+            selected_metric_direction = _parse_metric_direction_from_file(selected_file)
+        return (
+            selected,
+            selected_file,
+            selected_issue,
+            selected_target_metric,
+            selected_metric_direction,
+            deferred,
+            None,
+        )
 
     if due:
         # Normal scheduling: pick the single most-overdue program.
@@ -502,13 +552,22 @@ def select_program(due, forced_program=None, all_programs=None, unconfigured=Non
         selected = due_sorted[0]["name"]
         selected_file = due_sorted[0]["file"]
         selected_target_metric = due_sorted[0].get("target_metric")
+        selected_metric_direction = due_sorted[0].get("metric_direction") or "higher"
         deferred = [p["name"] for p in due_sorted[1:]]
         selected_issue = (
             issue_programs[selected]["issue_number"] if selected in issue_programs else None
         )
-        return selected, selected_file, selected_issue, selected_target_metric, deferred, None
+        return (
+            selected,
+            selected_file,
+            selected_issue,
+            selected_target_metric,
+            selected_metric_direction,
+            deferred,
+            None,
+        )
 
-    return None, None, None, None, [], None
+    return None, None, None, None, "higher", [], None
 
 
 # ---------------------------------------------------------------------------
@@ -574,9 +633,15 @@ def main():
             unconfigured.append(name)
             continue
 
-        schedule_delta, target_metric, invalid_target = parse_program_frontmatter(content)
+        schedule_delta, target_metric, invalid_target, metric_direction, invalid_direction = parse_program_frontmatter(content)
         if invalid_target is not None:
             print("  Warning: {} has invalid target-metric value: {}".format(name, invalid_target))
+        if invalid_direction is not None:
+            print(
+                "  Warning: {} has invalid metric_direction value: {!r} (must be 'higher' or 'lower'); defaulting to 'higher'".format(
+                    name, invalid_direction
+                )
+            )
 
         # Read state from repo-memory
         state = read_program_state(name)
@@ -613,9 +678,15 @@ def main():
             )
             continue
 
-        due.append({"name": name, "last_run": lr, "file": pf, "target_metric": target_metric})
+        due.append({
+            "name": name,
+            "last_run": lr,
+            "file": pf,
+            "target_metric": target_metric,
+            "metric_direction": metric_direction,
+        })
 
-    selected, selected_file, selected_issue, selected_target_metric, deferred, error = (
+    selected, selected_file, selected_issue, selected_target_metric, selected_metric_direction, deferred, error = (
         select_program(due, forced_program, all_programs, unconfigured, issue_programs)
     )
 
@@ -645,6 +716,7 @@ def main():
         "selected_file": selected_file,
         "selected_issue": selected_issue,
         "selected_target_metric": selected_target_metric,
+        "selected_metric_direction": selected_metric_direction,
         "state_file_size_bytes": get_state_file_size(selected) if selected else 0,
         "state_file_max_bytes": STATE_FILE_MAX_BYTES,
         "issue_programs": {

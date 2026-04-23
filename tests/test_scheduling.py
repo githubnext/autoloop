@@ -39,9 +39,17 @@ def slugify_issue_title(title):
 
 
 def parse_frontmatter(content):
-    """Two-tuple wrapper over the scheduler's three-tuple frontmatter parser."""
-    schedule_delta, target_metric, _ = autoloop_scheduler.parse_program_frontmatter(content)
+    """Two-tuple wrapper over the scheduler's frontmatter parser."""
+    schedule_delta, target_metric, _, _, _ = autoloop_scheduler.parse_program_frontmatter(content)
     return schedule_delta, target_metric
+
+
+def parse_frontmatter_full(content):
+    """Three-tuple wrapper exposing ``metric_direction`` for direction-aware tests."""
+    schedule_delta, target_metric, _, metric_direction, _ = (
+        autoloop_scheduler.parse_program_frontmatter(content)
+    )
+    return schedule_delta, target_metric, metric_direction
 
 
 def check_if_due(schedule_delta, last_run, now):
@@ -342,6 +350,119 @@ class TestParseFrontmatter:
 
 
 # ---------------------------------------------------------------------------
+# parse_program_frontmatter — metric_direction
+# ---------------------------------------------------------------------------
+
+class TestMetricDirectionParsing:
+    def test_default_is_higher_when_omitted(self):
+        content = "---\nschedule: every 6h\ntarget-metric: 0.95\n---\n\n# Program\n"
+        _, _, direction = parse_frontmatter_full(content)
+        assert direction == "higher"
+
+    def test_no_frontmatter_defaults_to_higher(self):
+        _, _, direction = parse_frontmatter_full("# Program\n\nNo frontmatter.\n")
+        assert direction == "higher"
+
+    def test_explicit_higher(self):
+        content = "---\nmetric_direction: higher\n---\n\n# Program\n"
+        _, _, direction = parse_frontmatter_full(content)
+        assert direction == "higher"
+
+    def test_explicit_lower(self):
+        content = "---\nmetric_direction: lower\n---\n\n# Program\n"
+        _, _, direction = parse_frontmatter_full(content)
+        assert direction == "lower"
+
+    def test_lower_with_target_metric(self):
+        content = "---\nschedule: every 6h\ntarget-metric: 0.9\nmetric_direction: lower\n---\n\n# Program\n"
+        schedule, target, direction = parse_frontmatter_full(content)
+        assert schedule == timedelta(hours=6)
+        assert target == 0.9
+        assert direction == "lower"
+
+    def test_invalid_value_falls_back_to_higher(self):
+        content = "---\nmetric_direction: sideways\n---\n\n# Program\n"
+        _, target_metric, target_invalid, direction, direction_invalid = (
+            autoloop_scheduler.parse_program_frontmatter(content)
+        )
+        assert direction == "higher"
+        assert direction_invalid == "sideways"
+
+    def test_quoted_value_accepted(self):
+        content = '---\nmetric_direction: "lower"\n---\n\n# Program\n'
+        _, _, direction = parse_frontmatter_full(content)
+        assert direction == "lower"
+
+    def test_dashed_alias_accepted(self):
+        # Accept either `metric_direction:` or `metric-direction:` for parity with `target-metric`.
+        content = "---\nmetric-direction: lower\n---\n\n# Program\n"
+        _, _, direction = parse_frontmatter_full(content)
+        assert direction == "lower"
+
+    def test_case_insensitive(self):
+        content = "---\nmetric_direction: LOWER\n---\n\n# Program\n"
+        _, _, direction = parse_frontmatter_full(content)
+        assert direction == "lower"
+
+
+# ---------------------------------------------------------------------------
+# Direction-aware improvement and halting condition (semantics expected by the
+# agent prompt — see workflows/autoloop.md Step 5 and Halting Condition).
+# ---------------------------------------------------------------------------
+
+def _improved(new_metric, best_metric, direction):
+    """Reference implementation of the direction-aware improvement check that
+    the agent applies in Step 5 of the workflow. Lives in the test file so we
+    pin the semantics that workflows/autoloop.md documents."""
+    if best_metric is None:
+        return True
+    if direction == "lower":
+        return new_metric < best_metric
+    return new_metric > best_metric
+
+
+def _target_met(best_metric, target_metric, direction):
+    """Reference implementation of the direction-aware halting condition."""
+    if target_metric is None or best_metric is None:
+        return False
+    if direction == "lower":
+        return best_metric <= target_metric
+    return best_metric >= target_metric
+
+
+class TestDirectionAwareImprovement:
+    def test_higher_improvement(self):
+        assert _improved(1.7, 1.5, "higher") is True
+        assert _improved(1.3, 1.5, "higher") is False
+        assert _improved(1.5, 1.5, "higher") is False  # equal is not strictly better
+
+    def test_lower_improvement(self):
+        assert _improved(1.3, 1.5, "lower") is True
+        assert _improved(1.7, 1.5, "lower") is False
+        assert _improved(1.5, 1.5, "lower") is False
+
+    def test_first_run_baseline_always_improves(self):
+        assert _improved(0.5, None, "higher") is True
+        assert _improved(0.5, None, "lower") is True
+
+
+class TestDirectionAwareHalting:
+    def test_higher_halts_at_or_above_target(self):
+        assert _target_met(0.97, 0.95, "higher") is True
+        assert _target_met(0.95, 0.95, "higher") is True
+        assert _target_met(0.94, 0.95, "higher") is False
+
+    def test_lower_halts_at_or_below_target(self):
+        assert _target_met(0.85, 0.9, "lower") is True
+        assert _target_met(0.9, 0.9, "lower") is True
+        assert _target_met(0.91, 0.9, "lower") is False
+
+    def test_no_target_never_halts(self):
+        assert _target_met(0.5, None, "higher") is False
+        assert _target_met(0.5, None, "lower") is False
+
+
+# ---------------------------------------------------------------------------
 # is_unconfigured (inline pattern, program scanning loop)
 # ---------------------------------------------------------------------------
 
@@ -492,7 +613,7 @@ class TestSelectProgram:
             {"name": "a", "last_run": "2025-01-15T06:00:00Z", "file": "a.md", "target_metric": 0.9},
             {"name": "c", "last_run": "2025-01-15T11:00:00Z", "file": "c.md", "target_metric": None},
         ]
-        selected, file, issue, target, deferred, err = select_program(due)
+        selected, file, issue, target, direction, deferred, err = select_program(due)
         assert selected == "a"
         assert file == "a.md"
         assert target == 0.9
@@ -508,7 +629,7 @@ class TestSelectProgram:
         assert selected == "new"
 
     def test_empty_due_list(self):
-        selected, file, issue, target, deferred, err = select_program([])
+        selected, file, issue, target, direction, deferred, err = select_program([])
         assert selected is None
         assert deferred == []
 
@@ -517,7 +638,7 @@ class TestSelectProgram:
             {"name": "a", "last_run": "2025-01-15T06:00:00Z", "file": "a.md", "target_metric": 0.5},
         ]
         all_progs = {"a": "a.md", "b": "b.md"}
-        selected, file, issue, target, deferred, err = select_program(
+        selected, file, issue, target, direction, deferred, err = select_program(
             due, forced_program="b", all_programs=all_progs
         )
         assert selected == "b"
@@ -525,14 +646,14 @@ class TestSelectProgram:
         assert err is None
 
     def test_forced_program_not_found(self):
-        selected, file, issue, target, deferred, err = select_program(
+        selected, file, issue, target, direction, deferred, err = select_program(
             [], forced_program="missing", all_programs={"a": "a.md"}
         )
         assert selected is None
         assert "not found" in err
 
     def test_forced_program_unconfigured(self):
-        selected, file, issue, target, deferred, err = select_program(
+        selected, file, issue, target, direction, deferred, err = select_program(
             [], forced_program="a", all_programs={"a": "a.md"}, unconfigured=["a"]
         )
         assert selected is None
@@ -542,7 +663,7 @@ class TestSelectProgram:
         due = []
         all_progs = {"my-issue": "/tmp/gh-aw/issue-programs/my-issue.md"}
         issue_progs = {"my-issue": {"issue_number": 42, "file": "/tmp/x", "title": "X"}}
-        selected, file, issue, target, deferred, err = select_program(
+        selected, file, issue, target, direction, deferred, err = select_program(
             due, forced_program="my-issue", all_programs=all_progs, issue_programs=issue_progs
         )
         assert selected == "my-issue"
@@ -553,7 +674,7 @@ class TestSelectProgram:
             {"name": "my-issue", "last_run": None, "file": "/tmp/my-issue.md", "target_metric": None},
         ]
         issue_progs = {"my-issue": {"issue_number": 7, "file": "/tmp/x", "title": "X"}}
-        selected, file, issue, target, deferred, err = select_program(
+        selected, file, issue, target, direction, deferred, err = select_program(
             due, issue_programs=issue_progs
         )
         assert selected == "my-issue"
@@ -564,7 +685,7 @@ class TestSelectProgram:
             {"name": "a", "last_run": "2025-01-15T06:00:00Z", "file": "a.md", "target_metric": 0.99},
         ]
         all_progs = {"a": "a.md"}
-        selected, file, issue, target, deferred, err = select_program(
+        selected, file, issue, target, direction, deferred, err = select_program(
             due, forced_program="a", all_programs=all_progs
         )
         assert target == 0.99
@@ -575,7 +696,7 @@ class TestSelectProgram:
         # directly from the program file (see forced-program fallback in the workflow).
         due = []
         all_progs = {"a": "a.md"}
-        selected, file, issue, target, deferred, err = select_program(
+        selected, file, issue, target, direction, deferred, err = select_program(
             due, forced_program="a", all_programs=all_progs
         )
         assert selected == "a"
@@ -586,6 +707,35 @@ class TestSelectProgram:
         content = "---\nschedule: every 6h\ntarget-metric: 0.95\n---\n\n# Program\n"
         _, target = parse_frontmatter(content)
         assert target == 0.95
+
+    def test_metric_direction_plumbed_through_due(self):
+        due = [
+            {
+                "name": "min-loss",
+                "last_run": "2025-01-15T06:00:00Z",
+                "file": "min-loss.md",
+                "target_metric": 0.9,
+                "metric_direction": "lower",
+            },
+        ]
+        selected, file, issue, target, direction, deferred, err = select_program(due)
+        assert selected == "min-loss"
+        assert direction == "lower"
+        assert err is None
+
+    def test_metric_direction_defaults_to_higher_when_absent_from_due_entry(self):
+        # Legacy due entries (no metric_direction key) must still default to "higher".
+        due = [
+            {
+                "name": "legacy",
+                "last_run": "2025-01-15T06:00:00Z",
+                "file": "legacy.md",
+                "target_metric": None,
+            },
+        ]
+        selected, file, issue, target, direction, deferred, err = select_program(due)
+        assert selected == "legacy"
+        assert direction == "higher"
 
 
 # ---------------------------------------------------------------------------
