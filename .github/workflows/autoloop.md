@@ -35,27 +35,26 @@ network:
   - dotnet
 
 safe-outputs:
+  max-patch-size: 10240
   add-comment:
     max: 7
     target: "*"
     hide-older-comments: false
   create-pull-request:
     draft: true
-    title-prefix: "[Autoloop] "
     labels: [automation, autoloop]
     protected-files: fallback-to-issue
     max: 2
   push-to-pull-request-branch:
     target: "*"
-    title-prefix: "[Autoloop] "
+    title-prefix: "[Autoloop"
     max: 2
   create-issue:
-    title-prefix: "[Autoloop] "
     labels: [automation, autoloop]
     max: 1
   update-issue:
     target: "*"
-    title-prefix: "[Autoloop] "
+    title-prefix: "[Autoloop"
     max: 3
   add-labels:
     target: "*"
@@ -388,7 +387,7 @@ There are no separate "steering" or "experiment log" issues — they have all be
 
 If `selected_issue` is `null` in `/tmp/gh-aw/autoloop.json`, the program is file-based **and** has no program issue yet. On the first run, create one with `create-issue`:
 
-- **Title**: `[Autoloop: {program-name}]` (the `[Autoloop] ` prefix is added automatically by the safe-output `title-prefix`, so pass the title as `{program-name}`).
+- **Title**: `[Autoloop: {program-name}]`.
 - **Body**: the contents of the program file (`program.md`) plus a placeholder for the status comment so maintainers know one will be edited in place.
 - **Labels**: `[autoloop-program, automation, autoloop]`.
 
