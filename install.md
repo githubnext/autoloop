@@ -53,33 +53,61 @@ gh aw init
 
 **What this does**: Configures `.gitattributes`, creates the dispatcher agent, and sets up Copilot setup steps.
 
-## Step 3: Clone Autoloop and Copy Files
+## Step 3: Download Autoloop and Copy Files
 
-Clone the Autoloop repository and copy its files into this repo:
+Download the Autoloop source as a zip and copy the files you need into this repo. This avoids a `git clone` (no `.git` history is downloaded, and `git` is not required) and works on Linux, macOS, and Windows.
 
-```bash
-git clone https://github.com/githubnext/autoloop /tmp/autoloop
-```
+Use the snippet for your shell:
 
-Copy the workflow definitions:
-
-```bash
-cp -r /tmp/autoloop/workflows/ .github/workflows/
-```
-
-Copy the issue template and create the Autoloop directories:
+<details open>
+<summary><strong>Linux &amp; macOS (bash / zsh)</strong></summary>
 
 ```bash
-mkdir -p .github/ISSUE_TEMPLATE
-cp -r /tmp/autoloop/.github/ISSUE_TEMPLATE/ .github/ISSUE_TEMPLATE/
-mkdir -p .autoloop/programs
+# Download and extract (no git history)
+curl -fL https://github.com/githubnext/autoloop/archive/refs/heads/main.zip -o /tmp/autoloop.zip
+unzip -q /tmp/autoloop.zip -d /tmp/autoloop_extract
+
+# Create target directories
+mkdir -p .github/workflows .github/ISSUE_TEMPLATE .autoloop/programs
+
+# Copy files
+cp -R /tmp/autoloop_extract/autoloop-main/workflows/. .github/workflows/
+cp -R /tmp/autoloop_extract/autoloop-main/.github/ISSUE_TEMPLATE/. .github/ISSUE_TEMPLATE/
+
+# Clean up
+rm -rf /tmp/autoloop.zip /tmp/autoloop_extract
 ```
 
-Clean up:
+If `unzip` is not installed (e.g. some minimal Linux images), replace the `unzip` line above with this `tar` command — it extracts zip archives on macOS and most modern Linux distributions:
 
 ```bash
-rm -rf /tmp/autoloop
+mkdir -p /tmp/autoloop_extract && tar -xf /tmp/autoloop.zip -C /tmp/autoloop_extract
 ```
+
+</details>
+
+<details>
+<summary><strong>Windows (PowerShell)</strong></summary>
+
+```powershell
+# Download and extract (no git history)
+Invoke-WebRequest -Uri "https://github.com/githubnext/autoloop/archive/refs/heads/main.zip" -OutFile "$env:TEMP\autoloop.zip"
+Expand-Archive -Path "$env:TEMP\autoloop.zip" -DestinationPath "$env:TEMP\autoloop_extract" -Force
+
+# Create target directories
+New-Item -ItemType Directory -Force -Path ".github/workflows", ".github/ISSUE_TEMPLATE", ".autoloop/programs" | Out-Null
+
+# Copy files
+Copy-Item -Path "$env:TEMP\autoloop_extract\autoloop-main\workflows\*" -Destination ".github/workflows/" -Recurse -Force
+Copy-Item -Path "$env:TEMP\autoloop_extract\autoloop-main\.github\ISSUE_TEMPLATE\*" -Destination ".github/ISSUE_TEMPLATE/" -Recurse -Force
+
+# Clean up
+Remove-Item -Path "$env:TEMP\autoloop.zip", "$env:TEMP\autoloop_extract" -Recurse -Force
+```
+
+</details>
+
+> **Note:** The snippets above download the latest `main` branch. To pin to a specific version, replace `refs/heads/main` with `refs/tags/<tag>` and the `autoloop-main` folder name with `autoloop-<tag>`.
 
 ## Step 4: Compile the Workflows
 
