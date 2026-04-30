@@ -78,7 +78,7 @@ cp -R /tmp/autoloop_extract/autoloop-main/.github/ISSUE_TEMPLATE/. .github/ISSUE
 rm -rf /tmp/autoloop.zip /tmp/autoloop_extract
 ```
 
-If `unzip` is not available (e.g. some minimal Linux images), `tar` can extract a zip on macOS and most modern Linux distributions:
+If `unzip` is not installed (e.g. some minimal Linux images), replace the `unzip` line above with this `tar` command — it extracts zip archives on macOS and most modern Linux distributions:
 
 ```bash
 mkdir -p /tmp/autoloop_extract && tar -xf /tmp/autoloop.zip -C /tmp/autoloop_extract
