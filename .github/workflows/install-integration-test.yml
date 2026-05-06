@@ -1,0 +1,54 @@
+name: Install Integration Test
+
+# End-to-end test of install.md against a long-lived target repo.
+# Manual-dispatch only -- this exercises real LLM calls and force-pushes a
+# remote branch, so it must not run on PRs or schedules.
+
+on:
+  workflow_dispatch:
+    inputs:
+      keep_state_on_failure:
+        description: "Leave test repo in failure state for inspection"
+        type: boolean
+        default: false
+      install_test_repo:
+        description: "Target repo for the install (owner/repo)"
+        type: string
+        default: "mrjf/autoloop-test"
+
+jobs:
+  install-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install gh aw extension
+        env:
+          GH_TOKEN: ${{ secrets.INSTALL_TEST_TOKEN }}
+        run: gh extension install github/gh-aw
+
+      - name: Install Copilot CLI
+        env:
+          GH_TOKEN: ${{ secrets.INSTALL_TEST_TOKEN }}
+        # The Copilot CLI is distributed as an npm package. If the install
+        # path changes upstream, update this single step.
+        run: npm install -g @github/copilot
+
+      - name: Verify gh auth
+        env:
+          GH_TOKEN: ${{ secrets.INSTALL_TEST_TOKEN }}
+        run: gh auth status
+
+      - name: Run integration test
+        env:
+          GH_TOKEN: ${{ secrets.INSTALL_TEST_TOKEN }}
+          INSTALL_TEST_REPO: ${{ inputs.install_test_repo }}
+          KEEP_STATE_ON_FAILURE: ${{ inputs.keep_state_on_failure && '1' || '0' }}
+        run: ./tests/install-integration/run.sh
