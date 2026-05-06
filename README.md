@@ -47,6 +47,48 @@ All state — scheduling, iteration history, lessons learned, current priorities
 
 **You stay in control.** Each program gets its own long-running branch (`autoloop/<program-name>`) that you can merge whenever you're ready. You can provide feedback or steer the direction at any time by commenting on the program's issue or editing the state file on the memory branch.
 
+### Architecture
+
+The diagram below shows what happens during a single Autoloop run — how the scheduler picks a program, how the agent proposes and evaluates a change, and how state is persisted across the program issue, the `memory/autoloop` branch, and the program's draft PR.
+
+```mermaid
+flowchart TD
+    subgraph Pre["Pre-step (scheduler)"]
+        S[autoloop_scheduler.py] -->|reads| PD[".autoloop/programs/{name}/program.md"]
+        S -->|reads| SF[("memory/autoloop branch<br/>{name}.md state file")]
+        S -->|writes| AJ["/tmp/gh-aw/autoloop.json"]
+    end
+
+    subgraph Agent["Agent step"]
+        AJ -->|selected program| A1["Steps 1-2: Read program,<br/>state file, target files,<br/>issue comments"]
+        A1 --> A3["Step 3: Checkout autoloop/{name}<br/>fast-forward to main"]
+        A3 --> A4["Step 4: Propose change,<br/>run evaluation command"]
+        A4 -->|metric improved| A5a["Step 5a: Commit → push<br/>via create_pull_request /<br/>push_to_pull_request_branch"]
+        A4 -->|no improvement| REJ["Reject: update state,<br/>no push"]
+        A5a -->|CI green| A5c["Step 5c: Accept<br/>update state, post to issue"]
+        A5a -->|CI red| A5b["Step 5b: Fix loop<br/>(up to 5 attempts)"]
+        A5b -->|fixed| A5a
+        A5b -->|exhausted| PAUSE["Pause program"]
+    end
+
+    subgraph Safe["Safe-outputs step"]
+        A5a -->|patch artifact| SO["Apply patch to remote branch<br/>Create/update PR<br/>Post comments to issue"]
+    end
+
+    subgraph Persist["Persistence"]
+        A5c -->|writes| SF
+        REJ -->|writes| SF
+        SO -->|pushes| BR["autoloop/{name} branch"]
+        SO -->|creates/updates| PR["Draft PR"]
+        SO -->|comments on| ISS["Program issue<br/>[Autoloop: {name}]"]
+    end
+
+    subgraph Support["Supporting workflows"]
+        EV["Evergreen (every 5m)"] -->|fixes CI / merges main| PR
+        CI["CI workflow"] -->|runs on push| BR
+    end
+```
+
 ### Scheduling
 
 The workflow runs on a fixed schedule (every 6 hours by default) and runs **one program per trigger**. Each run, it picks the most-overdue program — so if you have 5 programs, they take turns rather than all running at once. Programs can set their own `schedule:` in their frontmatter (e.g. `every 1h`, `daily`, `weekly`), but they still only run when the workflow fires and it's their turn. To run more programs more often, you can increase the workflow's trigger frequency.
