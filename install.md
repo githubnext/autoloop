@@ -108,6 +108,13 @@ gh pr create --title "Install Autoloop" --body "Set up Autoloop workflows and co
 
 Report the pull request link to the user.
 
+**Important:** Before the workflow can run, add a `COPILOT_GITHUB_TOKEN` secret to your repository:
+
+1. [Create a fine-grained PAT](https://github.com/settings/personal-access-tokens/new?name=COPILOT_GITHUB_TOKEN&description=GitHub+Agentic+Workflows+-+Copilot+engine+authentication&user_copilot_requests=read) with **Account permissions > Copilot Requests > Read**.
+2. Add it to your repo: `gh aw secrets set COPILOT_GITHUB_TOKEN --value "<your-token>"`
+
+When you finish Step 5, print this reminder with the pull request link so the user can set the secret before the first workflow run.
+
 ## Step 6: Create Your First Program
 
 Next, suggest to the user that we create their first program, which will be added to the existing PR. If they decline, we're done. Else, continue.
