@@ -7,7 +7,7 @@ Follow the install instructions at the URL below, EXACTLY AS WRITTEN. Execute
 each step using shell commands. Do not skip steps. Do not improvise. Do not
 optimize or "improve" the instructions.
 
-Stop after Step 5 (the install PR is opened). Do NOT proceed to Step 6
+Stop after Step 6 (the install PR is opened). Do NOT proceed to Step 7
 ("Create Your First Program") -- the test harness handles program creation
 itself in a deterministic way.
 

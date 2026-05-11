@@ -49,6 +49,18 @@ require_file ".github/ISSUE_TEMPLATE/autoloop-program.md"
 # --- programs directory present (may be empty) ----------------------------
 require_dir ".autoloop/programs"
 
+# --- repo-agent instructions remind agents to recompile generated files ----
+require_file "AGENTS.md"
+grep -F "After modifying any \`.md\` workflow file under \`.github/workflows/\`, always recompile:" AGENTS.md >/dev/null \
+  || fail "AGENTS.md missing agentic workflow recompile instruction"
+grep -F "gh aw compile" AGENTS.md >/dev/null \
+  || fail "AGENTS.md missing gh aw compile instruction"
+grep -F "apm compile" AGENTS.md >/dev/null \
+  || fail "AGENTS.md missing apm compile instruction"
+grep -F 'Commit the regenerated `.lock.yml` and integration files together with your changes.' AGENTS.md >/dev/null \
+  || fail "AGENTS.md missing regenerated files commit instruction"
+ok "AGENTS.md includes agentic workflow recompile instructions"
+
 # --- lock idempotency: re-running compile must not change the lock file --
 LOCK=".github/workflows/autoloop.lock.yml"
 sha256() { shasum -a 256 "$1" | awk '{print $1}'; }

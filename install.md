@@ -10,8 +10,9 @@ Set up Autoloop in this repository by:
 2. Initializing the repo for agentic workflows
 3. Copying the Autoloop workflow and configuration files
 4. Compiling the workflows
-5. Creating a branch, committing, and opening a pull request
-6. Helping create the first Autoloop program
+5. Adding agent instructions to keep generated workflow files fresh
+6. Creating a branch, committing, and opening a pull request
+7. Helping create the first Autoloop program
 
 ## Step 1: Install gh-aw CLI Extension
 
@@ -89,7 +90,29 @@ gh aw compile autoloop
 
 **What this does**: Generates `.github/workflows/autoloop.lock.yml` from the workflow definition.
 
-## Step 5: Create a Branch, Commit, and Open a Pull Request
+## Step 5: Add Agent Instructions
+
+Add repository instructions so future coding agents recompile generated files after editing agentic workflows:
+
+````bash
+cat >> AGENTS.md <<'EOF'
+
+## Agentic Workflows
+
+After modifying any `.md` workflow file under `.github/workflows/`, always recompile:
+
+```bash
+gh aw compile
+apm compile
+```
+
+Commit the regenerated `.lock.yml` and integration files together with your changes.
+EOF
+````
+
+If your repository already uses `CLAUDE.md` or `COPILOT.md` instead of `AGENTS.md`, add the same instruction there too.
+
+## Step 6: Create a Branch, Commit, and Open a Pull Request
 
 Create a new branch for the installation changes, commit, and push:
 
@@ -108,7 +131,7 @@ gh pr create --title "Install Autoloop" --body "Set up Autoloop workflows and co
 
 Report the pull request link to the user.
 
-## Step 6: Create Your First Program
+## Step 7: Create Your First Program
 
 Next, suggest to the user that we create their first program, which will be added to the existing PR. If they decline, we're done. Else, continue.
 
