@@ -300,7 +300,7 @@ Each run executes **one iteration for the single selected program**:
 
 1. Read the program file to understand the goal, targets, and evaluation method.
 2. Read the **state file** `{program-name}.md` from the repo-memory folder. This is the **single source of truth** for all program state. The file contains:
-   - **⚙️ Machine State** table: `last_run`, `best_metric`, `target_metric`, `iteration_count`, `paused`, `pause_reason`, `completed`, `completed_reason`, `consecutive_errors`, `recent_statuses`. These are machine-readable scheduling and control fields visible to both humans and the pre-step.
+   - **⚙️ Machine State** table: `last_run`, `initial_metric`, `best_metric`, `target_metric`, `iteration_count`, `paused`, `pause_reason`, `completed`, `completed_reason`, `consecutive_errors`, `recent_statuses`. These are machine-readable scheduling and control fields visible to both humans and the pre-step.
    - **🎯 Current Priorities**: Human-set guidance for the next iterations (editable by maintainers).
    - **📚 Lessons Learned**: Key findings from past iterations.
    - **🚧 Foreclosed Avenues**: Approaches definitively ruled out, with reasons.
@@ -308,6 +308,7 @@ Each run executes **one iteration for the single selected program**:
    - **📊 Iteration History**: Reverse-chronological log of all past iterations.
    
    If the state file does not yet exist, create it in the repo-memory folder using the template defined in the [Repo Memory](#repo-memory) section.
+3. Before proposing a new change, reconcile any previous iteration whose metric was left as `pending-ci`: read the successful CI run/check logs or artifacts for the PR HEAD, parse the CI-measured fitness value, and retroactively update the state file, PR body, and program issue status comment before continuing. Use that CI-measured value exactly as the iteration metric; if it is the first accepted metric, set `Initial Metric` at the same time.
 
 ### Step 2: Analyze and Propose
 
@@ -345,11 +346,11 @@ Each run executes **one iteration for the single selected program**:
 2. Push the commit to the long-running branch.
 3. If a draft PR does not already exist for this branch, create one:
    - Title: `[Autoloop: {program-name}]`
-   - Body includes: a summary of the program goal, link to the program issue, the current best metric, and AI disclosure: `🤖 *This PR is maintained by Autoloop. Each accepted iteration adds a commit to this branch.*`
-   If a draft PR already exists, update the PR body with the latest metric and a summary of the most recent accepted iteration. Add a comment to the PR summarizing the iteration: what changed, old metric, new metric, improvement delta, and a link to the actions run.
+   - Body includes: a summary of the program goal, link to the program issue, cumulative fitness (`Fitness: {best_metric} (started at {initial_metric}, {absolute_delta} / {improvement_pct}% improvement)`), and AI disclosure: `🤖 *This PR is maintained by Autoloop. Each accepted iteration adds a commit to this branch.*`
+   If a draft PR already exists, update the PR body with the latest cumulative fitness, the baseline metric, the absolute and percentage improvement, and a summary of the most recent accepted iteration. Add a comment to the PR summarizing the iteration: what changed, old metric, new metric, improvement delta, and a link to the actions run.
 4. Ensure the program issue exists (see [Program Issue](#program-issue) below) — for file-based programs that have no program issue yet (`selected_issue` is null in `/tmp/gh-aw/autoloop.json`), create one and record its number in the state file's `Issue` field.
 5. Update the state file `{program-name}.md` in the repo-memory folder:
-   - Update the **⚙️ Machine State** table: reset `consecutive_errors` to 0, set `best_metric`, increment `iteration_count`, set `last_run` to current UTC timestamp, append `"accepted"` to `recent_statuses` (keep last 10), set `paused` to false.
+   - Update the **⚙️ Machine State** table: reset `consecutive_errors` to 0, set `best_metric`, set `initial_metric` only if it is currently missing/`—` (never overwrite it after the first accepted metric), increment `iteration_count`, set `last_run` to current UTC timestamp, append `"accepted"` to `recent_statuses` (keep last 10), set `paused` to false.
    - Prepend an entry to **📊 Iteration History** (newest first) with status ✅, metric, PR link, and a one-line summary of what changed and why it worked.
    - Update **📚 Lessons Learned** if this iteration revealed something new about the problem or what works.
    - Update **🔭 Future Directions** if this iteration opened new promising paths.
@@ -366,12 +367,13 @@ Each run executes **one iteration for the single selected program**:
 3. **Update the program issue**: edit the status comment and post a per-iteration comment on the program issue (see [Program Issue](#program-issue)).
 
 **If evaluation could not run** (build failure, missing dependencies, etc.):
-1. Discard the code changes (do not commit them to the long-running branch).
-2. Update the state file `{program-name}.md` in the repo-memory folder:
-   - Update the **⚙️ Machine State** table: increment `consecutive_errors`, increment `iteration_count`, set `last_run`, append `"error"` to `recent_statuses` (keep last 10).
+1. If CI is expected to run the same evaluation or publish the fitness value, commit and push the changes with the metric marked `pending-ci`. After CI succeeds, parse the CI-measured fitness from the run/check logs or artifacts and continue the accept flow using that value. If the value is not available before the iteration ends, leave the iteration history metric as `pending-ci`, append `"pending-ci"` to `recent_statuses`, update the PR/issue to say the metric is awaiting CI, and reconcile it at the start of the next iteration before proposing new work.
+2. If no CI-measured metric is available or expected, discard the code changes (do not commit them to the long-running branch).
+3. Update the state file `{program-name}.md` in the repo-memory folder:
+   - Update the **⚙️ Machine State** table: increment `iteration_count`, set `last_run`, append `"error"` (or `"pending-ci"` when awaiting CI fitness) to `recent_statuses` (keep last 10). Increment `consecutive_errors` only for the `"error"` path; do not increment it while waiting for CI fitness.
    - If `consecutive_errors` reaches 3+, set `paused` to `true` and set `pause_reason` in the Machine State table, and create an issue describing the problem.
-   - Prepend an entry to **📊 Iteration History** with status ⚠️ and a brief error description.
-3. **Update the program issue**: edit the status comment and post a per-iteration comment on the program issue (see [Program Issue](#program-issue)).
+   - Prepend an entry to **📊 Iteration History** with status ⚠️ and a brief error description, or status ⏳ with metric `pending-ci` when waiting for CI fitness.
+4. **Update the program issue**: edit the status comment and post a per-iteration comment on the program issue (see [Program Issue](#program-issue)).
 
 ## Program Issue
 
@@ -409,8 +411,10 @@ Find the status comment by searching for a comment containing `<!-- AUTOLOOP:STA
 
 | | |
 |---|---|
-| **Status** | 🟢 Active / ⏸️ Paused / ⚠️ Error / ✅ Completed |
+| **Status** | 🟢 Active / ⏳ Pending CI / ⏸️ Paused / ⚠️ Error / ✅ Completed |
+| **Initial Metric** | {initial_metric} |
 | **Best Metric** | {best_metric} |
+| **Improvement** | {absolute_delta} ({improvement_pct}% from initial) |
 | **Target Metric** | {target_metric or "— (open-ended)"} |
 | **Iterations** | {iteration_count} |
 | **Last Run** | [{YYYY-MM-DD HH:MM UTC}]({run_url}) |
@@ -421,7 +425,7 @@ Find the status comment by searching for a comment containing `<!-- AUTOLOOP:STA
 
 ### Summary
 
-{2-3 sentence summary of current state: what has been accomplished so far, what the current best approach is, and what direction the next iteration will likely take.}
+{2-3 sentence summary of current state: where the metric started, current best, total improvement, recent trajectory, and what direction the next iteration will likely take.}
 ```
 
 ### Per-Iteration Comment
@@ -432,7 +436,7 @@ After **every iteration** (accepted, rejected, or error), post a **new comment**
 🤖 **Iteration {N}** — [{status_emoji} {status}]({run_url})
 
 - **Change**: {one-line description of what was tried}
-- **Metric**: {value} (best: {best_metric}, delta: {+/-delta})
+- **Metric**: {value} (best: {best_metric}, delta: {+/-delta}, total improvement: {absolute_delta} / {improvement_pct}% from {initial_metric})
 - **Commit**: {short_sha} *(if accepted)*
 - **Result**: {one-sentence summary of what this iteration revealed}
 ```
@@ -522,7 +526,7 @@ Programs that omit `target-metric` are **open-ended** — they run indefinitely,
 Autoloop uses the gh-aw **repo-memory** tool for persistent state storage. Each program's state is stored as a markdown file (`{program-name}.md`) on the `memory/autoloop` branch, automatically managed by the repo-memory infrastructure.
 
 This means:
-- Maintainers can see **everything** in the state file on the `memory/autoloop` branch: current best metric, last run, iteration history, lessons, priorities — all in one place.
+- Maintainers can see **everything** in the state file on the `memory/autoloop` branch: initial metric, current best metric, cumulative improvement, last run, iteration history, lessons, priorities — all in one place.
 - Maintainers can **edit any section** of the state file to set priorities, give feedback, or flag foreclosed approaches.
 - The pre-step reads state files from the repo-memory directory to determine scheduling.
 - The agent reads and writes state files in the repo-memory folder; changes are automatically committed and pushed after the workflow completes.
@@ -561,6 +565,7 @@ When creating or updating a program's state file in the repo-memory folder, use 
 |-------|-------|
 | Last Run | — |
 | Iteration Count | 0 |
+| Initial Metric | — |
 | Best Metric | — |
 | Target Metric | — |
 | Branch | `autoloop/{program-name}` |
@@ -632,6 +637,7 @@ All iterations in reverse chronological order (newest first).
 |-------|------|-------------|
 | Last Run | ISO timestamp (e.g. `2025-01-15T12:00:00Z`) | UTC timestamp of the last iteration |
 | Iteration Count | integer | Total iterations completed |
+| Initial Metric | number or `—` | Baseline metric from the first accepted iteration. Set once (including when backfilling from CI-measured fitness) and never overwrite. |
 | Best Metric | number | Best metric value achieved so far |
 | Target Metric | number or `—` | Target metric from program frontmatter (halting condition). `—` if open-ended |
 | Branch | branch name | Long-running branch: `autoloop/{program-name}` |
@@ -642,7 +648,7 @@ All iterations in reverse chronological order (newest first).
 | Completed | `true` or `false` | Whether the program has reached its target metric |
 | Completed Reason | text or `—` | Why it completed (e.g., `target metric 0.95 reached with value 0.97`) |
 | Consecutive Errors | integer | Count of consecutive evaluation failures |
-| Recent Statuses | comma-separated words | Last 10 outcomes: `accepted`, `rejected`, or `error` |
+| Recent Statuses | comma-separated words | Last 10 outcomes: `accepted`, `rejected`, `error`, or `pending-ci`. `pending-ci` means a pushed iteration is waiting for CI-measured fitness to be reconciled. |
 
 ### Iteration History Entry Format
 
@@ -651,18 +657,23 @@ After each iteration, prepend an entry to the **📊 Iteration History** section
 ```markdown
 ### Iteration {N} — {YYYY-MM-DD HH:MM UTC} — [Run](https://github.com/{owner}/{repo}/actions/runs/{run_id})
 
-- **Status**: ✅ Accepted / ❌ Rejected / ⚠️ Error
+- **Status**: ✅ Accepted / ❌ Rejected / ⏳ Pending CI / ⚠️ Error
 - **Change**: {one-line description of what was tried}
 - **Metric**: {value} (previous best: {previous_best}, delta: {+/-delta})
+- **Total improvement**: {absolute_delta} ({improvement_pct}% from initial {initial_metric})
 - **Commit**: {short_sha} *(if accepted)*
 - **Notes**: {one or two sentences on what this iteration revealed}
 ```
+
+Cumulative improvement is direction-aware: for higher-is-better programs, use `best_metric - initial_metric`; for lower-is-better programs, use `initial_metric - best_metric`. The percentage is `(absolute_delta / abs(initial_metric)) * 100`; report `n/a` if the initial metric is missing or zero.
 
 ### Update Rules
 
 - **Always** read the state file before proposing a change. It contains human guidance you must follow.
 - **Always** update the state file after each iteration, regardless of outcome.
 - **Update the Machine State table first** — the scheduling pre-step depends on it.
+- **Preserve Initial Metric** — set it on the first accepted metric and never overwrite it. For legacy state files that lack it, backfill from the oldest accepted Iteration History metric if available; otherwise use the current `Best Metric` as the baseline and make clear that earlier improvement is unknown.
+- **Reconcile pending CI metrics before new work** — if any recent accepted/pushed entry has metric `pending-ci`, read the corresponding CI run/check output, replace `pending-ci` with the CI-measured fitness, and refresh `Initial Metric`, `Best Metric`, PR body, and issue status before proposing another change.
 - **Prepend** iteration history entries (newest first).
 - **Accumulate** Lessons Learned — add new insights, don't overwrite existing ones.
 - **Add to Foreclosed Avenues** only when an approach is conclusively ruled out (not just rejected once).

@@ -130,6 +130,7 @@ SAMPLE_STATE = """\
 |-------|-------|
 | Last Run | 2025-01-15T12:00:00Z |
 | Iteration Count | 42 |
+| Initial Metric | 0.50 |
 | Best Metric | 0.85 |
 | Target Metric | 0.95 |
 | Paused | false |
@@ -149,6 +150,7 @@ class TestParseMachineState:
     def test_basic_fields(self):
         state = parse_machine_state(SAMPLE_STATE)
         assert state["last_run"] == "2025-01-15T12:00:00Z"
+        assert state["initial_metric"] == "0.50"
         assert state["best_metric"] == "0.85"
         assert state["target_metric"] == "0.95"
 
@@ -928,6 +930,45 @@ class TestProseGuidance:
         assert "head_branch" in c, (
             "Workflow prose must instruct the agent to use the `head_branch` "
             "field from /tmp/gh-aw/autoloop.json."
+        )
+
+    def test_state_tracks_initial_metric(self):
+        c = self._content()
+        assert "| Initial Metric | — |" in c, (
+            "State file template must include an Initial Metric field for the "
+            "first accepted/baseline metric."
+        )
+        assert "set `initial_metric` only if it is currently missing" in c, (
+            "Accept flow must preserve the initial metric after it is set."
+        )
+        assert "never overwrite" in c.lower(), (
+            "Workflow guidance must explicitly tell agents not to overwrite "
+            "the initial metric."
+        )
+
+    def test_pr_and_issue_show_cumulative_improvement(self):
+        c = self._content()
+        assert "Fitness: {best_metric} (started at {initial_metric}" in c, (
+            "PR body guidance must show the current fitness together with the "
+            "starting metric."
+        )
+        assert "| **Improvement** | {absolute_delta} ({improvement_pct}% from initial) |" in c, (
+            "Issue status comment must expose cumulative improvement."
+        )
+        assert "Cumulative improvement is also **direction-aware**" in c, (
+            "Workflow must define direction-aware cumulative improvement math."
+        )
+
+    def test_pending_ci_metrics_are_reconciled(self):
+        c = self._content()
+        assert "pending-ci" in c, (
+            "Workflow must document how CI-measured fitness is represented while pending."
+        )
+        assert "reconcile any previous iteration whose metric was left as `pending-ci`" in c, (
+            "Step 1 must require reading previous CI results before proposing new work."
+        )
+        assert "refresh `Initial Metric`, `Best Metric`, PR body, and issue status" in c, (
+            "Pending CI reconciliation must flow CI-measured fitness back to visible state."
         )
 
 
