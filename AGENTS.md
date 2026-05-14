@@ -82,6 +82,7 @@ Programs can include an Evolution Strategy section (inspired by OpenEvolve) that
 - **Agentic Workflows**: https://github.com/github/gh-aw
 - **Quick Start**: https://github.github.com/gh-aw/setup/quick-start/
 - **Autoloop Examples**: See the [example programs](.autoloop/programs/) included in this repo
+- **Cost Control**: See [docs/cost-control.md](docs/cost-control.md) for a deep-dive report on cost-control possibilities for the harnesses Autoloop supports (token/$ budgets per iteration / day / week / month, cheaper-model strategies, and concrete proposals)
 
 ## Conventions
 
