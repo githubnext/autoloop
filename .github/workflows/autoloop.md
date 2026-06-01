@@ -383,6 +383,17 @@ Each program has **exactly one** open GitHub issue (labeled `autoloop-program`) 
 
 There are no separate "steering" or "experiment log" issues — they have all been collapsed into this one issue.
 
+### Comment Targeting (required)
+
+The `add-comment` safe-output is configured with `target: "*"`. That means **every comment you emit MUST name the issue or PR it targets** via the `item_number` field. An `add_comment` emitted without a target is rejected during safe-output processing, and a rejected comment **fails the whole run — even when the iteration's optimization work succeeded** (the agent and detection steps pass, but the run is still marked failed). This is a silent, work-losing failure mode; never emit an untargeted comment.
+
+Resolve `item_number` to a concrete value for every comment:
+
+- **Comments on the program issue** (status comment, per-iteration comment): set `item_number` to the program issue number. Use `selected_issue` from `/tmp/gh-aw/autoloop.json` whenever it is not null — this is the common steady-state case once a program issue exists. When the program issue was created earlier in *this same run* (file-based program, first iteration), set `item_number: "aw_program"` — the `temporary_id` from the `create-issue` call (see [Auto-Creation](#auto-creation-for-file-based-programs)).
+- **Comments on the draft PR**: set `item_number` to the PR number — use `existing_pr` from `autoloop.json`, or the number of the PR created in this run.
+
+If you genuinely have no issue or PR to target this iteration, **skip the comment** rather than emitting it without `item_number`.
+
 ### Auto-Creation for File-Based Programs
 
 If `selected_issue` is `null` in `/tmp/gh-aw/autoloop.json`, the program is file-based **and** has no program issue yet. On the first run, create one with `create-issue`:
@@ -390,6 +401,7 @@ If `selected_issue` is `null` in `/tmp/gh-aw/autoloop.json`, the program is file
 - **Title**: `[Autoloop: {program-name}]`.
 - **Body**: the contents of the program file (`program.md`) plus a placeholder for the status comment so maintainers know one will be edited in place.
 - **Labels**: `[autoloop-program, automation, autoloop]`.
+- **Temporary ID**: set `temporary_id: "aw_program"` on the `create-issue` call. The real issue number is only known after safe outputs are processed, so to comment on this issue in the *same run* you must target it by this temporary ID — set `item_number: "aw_program"` on those comments. Do **not** put the temporary ID in the comment's own `temporary_id` field; that field names the comment, not the target issue.
 
 Record the new issue number in the state file's `Issue` field. On subsequent runs, the pre-step will discover the existing program issue (it scans open issues with the `autoloop-program` label) and `selected_issue` will be populated automatically.
 
@@ -397,7 +409,7 @@ For issue-based programs (`selected_issue` is not null on the very first run), n
 
 ### Status Comment
 
-On the **first iteration**, post a comment on the program issue. On **every subsequent iteration**, update that same comment (edit it, do not post a new one). This is the "status comment" — always the earliest bot comment on the issue.
+On the **first iteration**, post a comment on the program issue. On **every subsequent iteration**, update that same comment (edit it, do not post a new one). This is the "status comment" — always the earliest bot comment on the issue. Set `item_number` to the program issue number on this comment (see [Comment Targeting](#comment-targeting-required)).
 
 Find the status comment by searching for a comment containing `<!-- AUTOLOOP:STATUS -->`. If multiple comments contain this sentinel, use the earliest one (lowest comment ID) and ignore the others.
 
@@ -426,7 +438,7 @@ Find the status comment by searching for a comment containing `<!-- AUTOLOOP:STA
 
 ### Per-Iteration Comment
 
-After **every iteration** (accepted, rejected, or error), post a **new comment** on the program issue with a summary of what happened:
+After **every iteration** (accepted, rejected, or error), post a **new comment** on the program issue with a summary of what happened. Set `item_number` to the program issue number on this comment (see [Comment Targeting](#comment-targeting-required)):
 
 ```markdown
 🤖 **Iteration {N}** — [{status_emoji} {status}]({run_url})
